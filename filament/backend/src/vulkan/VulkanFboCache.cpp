@@ -146,8 +146,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
     if (isSwapChain) {
         colorLayouts[0].subpass = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-        // It is legal to always use UNDEFINED for "initial", but we wish to avoid warnings
-        // when the load op is LOAD.
+        // Specifying UNDEFINED for "initial" but doing can discard the existing data.
         colorLayouts[0].initial = discard ? VK_IMAGE_LAYOUT_UNDEFINED :
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 

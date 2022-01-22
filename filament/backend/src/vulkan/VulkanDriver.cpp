@@ -1422,8 +1422,8 @@ void VulkanDriver::stopCapture(int) {
 void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y,
         uint32_t width, uint32_t height, PixelBufferDescriptor&& pbd) {
     const VkDevice device = mContext.device;
-    const VulkanRenderTarget* srcTarget = handle_cast<VulkanRenderTarget*>(src);
-    const VulkanTexture* srcTexture = srcTarget->getColor(mContext.currentSurface, 0).texture;
+    VulkanRenderTarget* srcTarget = handle_cast<VulkanRenderTarget*>(src);
+    VulkanTexture* srcTexture = srcTarget->getColor(mContext.currentSurface, 0).texture;
     const VkFormat srcFormat = srcTexture ? srcTexture->getVkFormat() :
             mContext.currentSurface->surfaceFormat.format;
     const bool swizzle = srcFormat == VK_FORMAT_B8G8R8A8_UNORM;
@@ -1468,7 +1468,7 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
-    // TODO: staging should just use the GENERAL layout zamboni
+    // TODO: staging should just use the GENERAL layout
     transitionImageLayout(cmdbuffer, {
         .image = stagingImage,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1520,11 +1520,10 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         .layerCount = 1,
     };
 
-    // FIXME: the content of the source may be destroyed because of VK_IMAGE_LAYOUT_UNDEFINED zamboni
     VkImage srcImage = srcTarget->getColor(mContext.currentSurface, 0).image;
     transitionImageLayout(cmdbuffer, {
         .image = srcImage,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .oldLayout = srcAttachment.layout,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .subresources = srcRange,
         .srcStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1541,24 +1540,29 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
 
     // Restore the source image layout.
 
+    printf("prideout srcImage %p %p %p\n", srcImage, srcTexture, mContext.currentSurface->presentQueue);
+
     if (srcTexture || mContext.currentSurface->presentQueue) {
-        const VkImageLayout present = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        // FIXME: the content of image we just blitted into may be destroyed because of VK_IMAGE_LAYOUT_UNDEFINED zamboni
+        const VkImageLayout newLayout = srcTexture ? mContext.getTextureLayout(srcTexture->usage) :
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         transitionImageLayout(cmdbuffer, {
             .image = srcImage,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = srcTexture ? mContext.getTextureLayout(srcTexture->usage) : present,
+            .oldLayout = srcAttachment.layout,
+            .newLayout = newLayout,
             .subresources = srcRange,
             .srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT,
             .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
             .dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
         });
+        if (srcTexture) {
+            srcTexture->setLayout(srcRange, newLayout);
+        }
+        printf("prideout has transitioned srcImage to %d\n", newLayout);
     } else {
-        // FIXME: the content of image we just blitted into may be destroyed because of VK_IMAGE_LAYOUT_UNDEFINED zamboni
         transitionImageLayout(cmdbuffer, {
             .image = srcImage,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .oldLayout = srcAttachment.layout,
             .newLayout = VK_IMAGE_LAYOUT_GENERAL,
             .subresources = srcRange,
             .srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT,

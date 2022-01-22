@@ -54,6 +54,8 @@ struct VulkanTexture : public HwTexture {
     void setSidecar(VulkanTexture* sidecar) { mSidecarMSAA = sidecar; }
     VulkanTexture* getSidecar() const { return mSidecarMSAA; }
 
+    void setLayout(const VkImageSubresourceRange& range, VkImageLayout layout);
+
 private:
     // Gets or creates a cached VkImageView for a range of miplevels and array layers.
     // If isAttachment is true, this always returns a 2D image view without swizzle.
@@ -81,7 +83,6 @@ private:
 
     // Track the image layout of each subresource using a sparse range map.
     utils::RangeMap<uint32_t, VkImageLayout> mSubresourceLayouts;
-    void setLayout(const VkImageSubresourceRange& range, VkImageLayout layout);
     VkImageLayout getLayout(uint32_t layer, uint32_t level) const;
     void transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
                 VkImageLayout newLayout);
