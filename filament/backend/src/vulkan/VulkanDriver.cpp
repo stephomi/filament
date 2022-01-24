@@ -1468,11 +1468,10 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
-    // TODO: staging should just use the GENERAL layout
     transitionImageLayout(cmdbuffer, {
         .image = stagingImage,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
         .subresources = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = 0,
@@ -1535,7 +1534,7 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
     // Perform the blit.
 
     vkCmdCopyImage(cmdbuffer, srcTarget->getColor(mContext.currentSurface, 0).image,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingImage, VK_IMAGE_LAYOUT_GENERAL,
             1, &imageCopyRegion);
 
     // Restore the source image layout.
@@ -1566,24 +1565,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
         });
     }
-
-    // Transition the staging image layout to GENERAL.
-    transitionImageLayout(cmdbuffer, {
-        .image = stagingImage,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .subresources = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-        .srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT,
-        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-    });
 
     // TODO: don't flush/wait here -- we should do this asynchronously
 
