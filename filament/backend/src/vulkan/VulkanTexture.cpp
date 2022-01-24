@@ -434,13 +434,22 @@ void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubr
 }
 
 void VulkanTexture::setLayout(const VkImageSubresourceRange& range, VkImageLayout layout) {
-    const uint32_t first = (range.baseArrayLayer << 16) | range.baseMipLevel;
-    const uint32_t last = ((range.baseArrayLayer + range.layerCount) << 16) |
-            (range.baseMipLevel + range.levelCount);
+    const uint32_t first_layer = range.baseArrayLayer;
+    const uint32_t last_layer = first_layer + range.layerCount;
+    const uint32_t first_level = range.baseMipLevel;
+    const uint32_t last_level = first_level + range.levelCount;
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED) {
-        mSubresourceLayouts.clear(first, last);
+        for (uint32_t layer = first_layer; layer < last_layer; ++layer) {
+            const uint32_t first = (layer << 16) | first_level;
+            const uint32_t last = (layer << 16) | last_level;
+            mSubresourceLayouts.clear(first, last);
+        }
     } else {
-        mSubresourceLayouts.add(first, last, layout);
+        for (uint32_t layer = first_layer; layer < last_layer; ++layer) {
+            const uint32_t first = (layer << 16) | first_level;
+            const uint32_t last = (layer << 16) | last_level;
+            mSubresourceLayouts.add(first, last, layout);
+        }
     }
 }
 
