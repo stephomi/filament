@@ -1520,10 +1520,10 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         .layerCount = 1,
     };
 
-    VkImage srcImage = srcTarget->getColor(mContext.currentSurface, 0).image;
+    VkImage srcImage = srcAttachment.image;
     transitionImageLayout(cmdbuffer, {
         .image = srcImage,
-        .oldLayout = srcAttachment.layout,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .subresources = srcRange,
         .srcStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1540,15 +1540,11 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
 
     // Restore the source image layout.
 
-    printf("prideout srcImage %p %p %p\n", srcImage, srcTexture, mContext.currentSurface->presentQueue);
-
     if (srcTexture || mContext.currentSurface->presentQueue) {
-        const VkImageLayout newLayout = srcTexture ? mContext.getTextureLayout(srcTexture->usage) :
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         transitionImageLayout(cmdbuffer, {
             .image = srcImage,
-            .oldLayout = srcAttachment.layout,
-            .newLayout = newLayout,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .subresources = srcRange,
             .srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT,
             .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1556,9 +1552,8 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
         });
         if (srcTexture) {
-            srcTexture->setLayout(srcRange, newLayout);
+            srcTexture->setLayout(srcRange, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         }
-        printf("prideout has transitioned srcImage to %d\n", newLayout);
     } else {
         transitionImageLayout(cmdbuffer, {
             .image = srcImage,
