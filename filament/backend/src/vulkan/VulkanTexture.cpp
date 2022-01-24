@@ -308,12 +308,12 @@ void VulkanTexture::updateCubeImage(const PixelBufferDescriptor& data,
     const VkImageSubresourceRange range = { mAspect, miplevel, 1, 0, 6 };
     const VkImageLayout textureLayout = mContext.getTextureLayout(usage);
 
-    transitionLayout(cmdbuffer, range, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionLayout(cmdbuffer, range, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     copyBufferToImage(cmdbuffer, stage->buffer, mTextureImage, width, height, 1,
             &faceOffsets, miplevel);
 
-    transitionLayout(cmdbuffer, range, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, textureLayout);
+    transitionLayout(cmdbuffer, range, textureLayout);
 }
 
 void VulkanTexture::setPrimaryRange(uint32_t minMiplevel, uint32_t maxMiplevel) {
