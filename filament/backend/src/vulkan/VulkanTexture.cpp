@@ -272,14 +272,13 @@ void VulkanTexture::updateWithBlitImage(const PixelBufferDescriptor& hostData, u
     }};
 
     const VkImageSubresourceRange range = { mAspect, miplevel, 1, 0, 1 };
-    const VkImageLayout textureLayout = mContext.getTextureLayout(usage);
 
     transitionLayout(cmdbuffer, range, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     vkCmdBlitImage(cmdbuffer, stage->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mTextureImage,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blitRegions, VK_FILTER_NEAREST);
 
-    transitionLayout(cmdbuffer, range, textureLayout);
+    transitionLayout(cmdbuffer, range, mContext.getTextureLayout(usage));
 }
 
 void VulkanTexture::updateCubeImage(const PixelBufferDescriptor& data,
@@ -391,7 +390,7 @@ void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubr
     if (oldLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
         for (uint32_t layer = 0; layer < range.layerCount; ++layer) {
             for (uint32_t level = 0; level < range.levelCount; ++level) {
-                assert_invariant(getLayout(layer + range.baseArrayLayer,
+                assert_invariant(getVkLayout(layer + range.baseArrayLayer,
                         level + range.baseMipLevel) == oldLayout);
             }
         }
@@ -412,12 +411,12 @@ void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubr
         VkImageLayout newLayout) {
     // In debug builds, ensure that all subresources in the given range have the same layout.
     // It's easier to catch a mistake here than with validation, which waits until submission time.
-    VkImageLayout oldLayout = getLayout(range.baseArrayLayer, range.baseMipLevel);
+    VkImageLayout oldLayout = getVkLayout(range.baseArrayLayer, range.baseMipLevel);
 #ifndef NDEBUG
     if (oldLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
         for (uint32_t layer = 0; layer < range.layerCount; ++layer) {
             for (uint32_t level = 0; level < range.levelCount; ++level) {
-                assert_invariant(getLayout(layer + range.baseArrayLayer,
+                assert_invariant(getVkLayout(layer + range.baseArrayLayer,
                         level + range.baseMipLevel) == oldLayout);
             }
         }
@@ -445,7 +444,7 @@ void VulkanTexture::setLayout(const VkImageSubresourceRange& range, VkImageLayou
     }
 }
 
-VkImageLayout VulkanTexture::getLayout(uint32_t layer, uint32_t level) const {
+VkImageLayout VulkanTexture::getVkLayout(uint32_t layer, uint32_t level) const {
     const uint32_t key = (layer << 16) | level;
     if (!mSubresourceLayouts.has(key)) {
         return VK_IMAGE_LAYOUT_UNDEFINED;

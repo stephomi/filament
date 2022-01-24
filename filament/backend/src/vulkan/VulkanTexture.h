@@ -51,6 +51,8 @@ struct VulkanTexture : public HwTexture {
 
     VkFormat getVkFormat() const { return mVkFormat; }
     VkImage getVkImage() const { return mTextureImage; }
+    VkImageLayout getVkLayout(uint32_t layer, uint32_t level) const;
+
     void setSidecar(VulkanTexture* sidecar) { mSidecarMSAA = sidecar; }
     VulkanTexture* getSidecar() const { return mSidecarMSAA; }
 
@@ -83,11 +85,9 @@ private:
 
     // Track the image layout of each subresource using a sparse range map.
     utils::RangeMap<uint32_t, VkImageLayout> mSubresourceLayouts;
-    VkImageLayout getLayout(uint32_t layer, uint32_t level) const;
     void transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
                 VkImageLayout newLayout);
 
-    // TODO: can we get rid of this overload? zamboni
     void transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
                 VkImageLayout oldLayout, VkImageLayout newLayout);
 
