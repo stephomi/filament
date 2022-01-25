@@ -180,7 +180,7 @@ VulkanTexture::VulkanTexture(VulkanContext& context, SamplerType target, uint8_t
     if (any(usage & (TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT))) {
         const uint32_t layers = mPrimaryViewRange.layerCount;
         VkImageSubresourceRange range = { mAspect, 0, levels, 0, layers };
-        VkImageLayout layout = mContext.getTextureLayout(usage);
+        VkImageLayout layout = getDefaultImageLayout(usage);
         VkCommandBuffer commands = mContext.commands->get().cmdbuffer;
         transitionLayout(commands, range, layout);
     }
@@ -238,7 +238,7 @@ void VulkanTexture::updateWithCopyBuffer(const PixelBufferDescriptor& hostData, 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
     const VkImageSubresourceRange range = { mAspect, miplevel, 1, 0, 1 };
-    const VkImageLayout textureLayout = mContext.getTextureLayout(usage);
+    const VkImageLayout textureLayout = getDefaultImageLayout(usage);
     transitionLayout(cmdbuffer, range, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     copyBufferToImage(cmdbuffer, stage->buffer, mTextureImage, width, height, depth,
@@ -278,7 +278,7 @@ void VulkanTexture::updateWithBlitImage(const PixelBufferDescriptor& hostData, u
     vkCmdBlitImage(cmdbuffer, stage->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mTextureImage,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blitRegions, VK_FILTER_NEAREST);
 
-    transitionLayout(cmdbuffer, range, mContext.getTextureLayout(usage));
+    transitionLayout(cmdbuffer, range, getDefaultImageLayout(usage));
 }
 
 void VulkanTexture::updateCubeImage(const PixelBufferDescriptor& data,
@@ -306,7 +306,7 @@ void VulkanTexture::updateCubeImage(const PixelBufferDescriptor& data,
     const uint32_t height = std::max(1u, this->height >> miplevel);
 
     const VkImageSubresourceRange range = { mAspect, miplevel, 1, 0, 6 };
-    const VkImageLayout textureLayout = mContext.getTextureLayout(usage);
+    const VkImageLayout textureLayout = getDefaultImageLayout(usage);
 
     transitionLayout(cmdbuffer, range, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
@@ -380,31 +380,6 @@ void VulkanTexture::copyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkIm
     region.imageSubresource.layerCount = 1;
     region.imageExtent = extent;
     vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-}
-
-void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
-        VkImageLayout oldLayout, VkImageLayout newLayout) {
-    // In debug builds, ensure that all subresources in the given range have the same layout.
-    // It's easier to catch a mistake here than with validation, which waits until submission time.
-#ifndef NDEBUG
-    if (oldLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
-        for (uint32_t layer = 0; layer < range.layerCount; ++layer) {
-            for (uint32_t level = 0; level < range.levelCount; ++level) {
-                assert_invariant(getVkLayout(layer + range.baseArrayLayer,
-                        level + range.baseMipLevel) == oldLayout);
-            }
-        }
-    }
-#endif
-
-    transitionImageLayout(commands, textureTransitionHelper({
-            .image = mTextureImage,
-            .oldLayout = oldLayout,
-            .newLayout = newLayout,
-            .subresources = range,
-    }));
-
-    setLayout(range, newLayout);
 }
 
 void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,

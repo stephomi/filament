@@ -514,6 +514,25 @@ VkImageViewType getImageViewType(SamplerType target) {
     }
 }
 
+VkImageLayout getDefaultImageLayout(TextureUsage usage) {
+    // Filament sometimes samples from depth while it is bound to the current render target, (e.g.
+    // SSAO does this while depth writes are disabled) so let's keep it simple and use GENERAL for
+    // all depth textures.
+    if (any(usage & TextureUsage::DEPTH_ATTACHMENT)) {
+        return VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    // Filament sometimes samples from one miplevel while writing to another level in the same
+    // texture (e.g. bloom does this). Moreover we'd like to avoid lots of expensive layout
+    // transitions. So, keep it simple and use GENERAL for all color-attachable textures.
+    if (any(usage & TextureUsage::COLOR_ATTACHMENT)) {
+        return VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    // Finally, the layout for an immutable texture is optimal read-only.
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
 void transitionImageLayout(VkCommandBuffer cmdbuffer, VulkanLayoutTransition transition) {
     if (transition.oldLayout == transition.newLayout) {
         return;

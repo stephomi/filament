@@ -1808,7 +1808,7 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
             samplers[bindingPoint] = {
                 .sampler = vksampler,
                 .imageView = texture->getPrimaryImageView(),
-                .imageLayout = mContext.getTextureLayout(texture->usage)
+                .imageLayout = getDefaultImageLayout(texture->usage)
             };
 
             if (mContext.currentRenderPass.depthFeedback == texture) {
