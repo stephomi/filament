@@ -67,9 +67,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(VkDebugUtilsMessageSeverityFla
     if (!strcmp("VUID-vkCmdDrawIndexed-None-02699", cbdata->pMessageIdName)) { // DO NOT COMMIT
         return VK_FALSE;
     }
-    if (strstr(cbdata->pMessage, "0xe7e6d0000000000f")) {
-        return VK_FALSE;
-    }
+//    if (strstr(cbdata->pMessage, "0xe7e6d0000000000f")) {
+//        return VK_FALSE;
+//    }
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         utils::slog.e << "VULKAN ERROR: (" << cbdata->pMessageIdName << ") "
                 << cbdata->pMessage << utils::io::endl;
