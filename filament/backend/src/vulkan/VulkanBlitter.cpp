@@ -130,7 +130,7 @@ void VulkanBlitter::blitFast(VkImageAspectFlags aspect, VkFilter filter,
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
     const VkImageLayout srcLayout = src.texture ?
-        src.texture->getVkLayout(src.layer, src.level) :
+        mContext.getTextureLayout(src.texture->usage) :
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     transitionImageLayout(cmdbuffer, {
@@ -170,7 +170,7 @@ void VulkanBlitter::blitFast(VkImageAspectFlags aspect, VkFilter filter,
     // Determine the desired texture layout for the destination while ensuring that the default
     // render target is supported, which has no associated texture.
     const VkImageLayout desiredLayout = dst.texture ?
-            dst.texture->getVkLayout(dst.layer, dst.level) :
+            mContext.getTextureLayout(dst.texture->usage) :
             mContext.currentSurface->getColor().layout;
 
     transitionImageLayout(cmdbuffer, blitterTransitionHelper({
