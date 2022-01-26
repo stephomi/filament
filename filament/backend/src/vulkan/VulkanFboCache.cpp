@@ -119,13 +119,13 @@ VkFramebuffer VulkanFboCache::getFramebuffer(FboKey config) noexcept {
     return framebuffer;
 }
 
-VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
+VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config, bool isSwapChain) noexcept {
     auto iter = mRenderPassCache.find(config);
     if (UTILS_LIKELY(iter != mRenderPassCache.end() && iter->second.handle != VK_NULL_HANDLE)) {
         iter.value().timestamp = mCurrentTime;
         return iter->second.handle;
     }
-    const bool isSwapChain = config.colorLayout[0] == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
     const bool hasSubpasses = config.subpassMask != 0;
 
     // Set up some const aliases for terseness.

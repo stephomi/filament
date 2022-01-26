@@ -275,7 +275,7 @@ void VulkanBlitter::blitSlowDepth(VkImageAspectFlags aspect, VkFilter filter,
         .samples = 1,
     };
 
-    const VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey);
+    const VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey, false);
     mPipelineCache.bindRenderPass(renderPass, 0);
 
     const VulkanFboCache::FboKey fbkey {

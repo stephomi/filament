@@ -1002,7 +1002,7 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
     }
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
-    VulkanAttachment depth = rt->getDepth(sc);
+    VulkanAttachment& depth = rt->getDepth(sc);
     VulkanTexture* depthFeedback = nullptr;
 
     // If an uncleared depth buffer is attached but discarded at the end of the pass, then we should
@@ -1046,7 +1046,7 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         }
     }
 
-    VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey);
+    VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey, rt->isSwapChain());
     mPipelineCache.bindRenderPass(renderPass, 0);
 
     // Create the VkFramebuffer or fetch it from cache.
@@ -1159,6 +1159,14 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         .currentSubpass = 0,
         .depthFeedback = depthFeedback
     };
+
+    // If the render target is a swap chain, then the render pass will transition it into
+    // VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. Other types of color targets have their layout
+    // preserved.
+    if (rt->isSwapChain()) {
+        assert_invariant(rt->getColorTargetCount(mContext.currentRenderPass) == 1);
+        sc->getColor().layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 }
 
 void VulkanDriver::endRenderPass(int) {
@@ -1182,6 +1190,7 @@ void VulkanDriver::endRenderPass(int) {
             .dstStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
         };
         transitionImageLayout(cmdbuffer, transition);
+        mCurrentRenderTarget->getDepth(mContext.currentSurface).layout = VK_IMAGE_LAYOUT_GENERAL;
     }
 
     // Since we might soon be sampling from the render target that we just wrote to, we need a
@@ -1413,7 +1422,8 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         uint32_t width, uint32_t height, PixelBufferDescriptor&& pbd) {
     const VkDevice device = mContext.device;
     VulkanRenderTarget* srcTarget = handle_cast<VulkanRenderTarget*>(src);
-    VulkanTexture* srcTexture = srcTarget->getColor(mContext.currentSurface, 0).texture;
+    const VulkanAttachment srcAttachment = srcTarget->getColor(mContext.currentSurface, 0);
+    VulkanTexture* srcTexture = srcAttachment.texture;
     const VkFormat srcFormat = srcTexture ? srcTexture->getVkFormat() :
             mContext.currentSurface->surfaceFormat.format;
     const bool swizzle = srcFormat == VK_FORMAT_B8G8R8A8_UNORM;
@@ -1475,8 +1485,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
     });
 
-    const VulkanAttachment srcAttachment = srcTarget->getColor(mContext.currentSurface, 0);
-
     VkImageCopy imageCopyRegion = {
         .srcSubresource = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1501,9 +1509,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
 
     // Transition the source image layout (which might be the swap chain)
 
-    // Since ReadPixels is always issued after at least one render pass, we know that the color
-    // attachment layout is COLOR_ATTACHMENT_OPTIMAL.
-
     const VkImageSubresourceRange srcRange = {
         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel = srcAttachment.level,
@@ -1513,9 +1518,12 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
     };
 
     VkImage srcImage = srcAttachment.image;
+
+    printf("prideout readPixels %p => %p\n", srcImage, stagingImage);
+
     transitionImageLayout(cmdbuffer, {
         .image = srcImage,
-        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .oldLayout = srcAttachment.layout,
         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .subresources = srcRange,
         .srcStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1524,22 +1532,19 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
     });
 
-    // Perform the into the staging area. At this point we know that the src layout is
-    // TRANSFER_SRC_OPTIMAL and the staging area is GENERAL.
-
-    vkCmdCopyImage(cmdbuffer, srcTarget->getColor(mContext.currentSurface, 0).image,
+    vkCmdCopyImage(cmdbuffer, srcAttachment.image,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingImage, VK_IMAGE_LAYOUT_GENERAL,
             1, &imageCopyRegion);
 
-    // Restore the source image layout back to VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL.
+    // Restore the source image layout back.
 
     if (UTILS_LIKELY(srcTexture)) {
-        srcTexture->transitionLayout(cmdbuffer, srcRange, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        srcTexture->transitionLayout(cmdbuffer, srcRange, srcAttachment.layout);
     } else {
         transitionImageLayout(cmdbuffer, {
             .image = srcImage,
             .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = srcAttachment.layout,
             .subresources = srcRange,
             .srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT,
             .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,

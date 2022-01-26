@@ -48,6 +48,8 @@ bool VulkanSwapChain::acquire() {
     context.commands->injectDependency(imageAvailable);
     acquired = true;
 
+    color[currentSwapIndex].layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
     assert_invariant(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR);
     return true;
 }
@@ -289,29 +291,11 @@ void VulkanSwapChain::makePresentable() {
         return;
     }
     VulkanAttachment& swapContext = color[currentSwapIndex];
-    assert_invariant(swapContext.layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     VkImageMemoryBarrier barrier {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = 0,
-
-        // Using COLOR_ATTACHMENT_OPTIMAL for oldLayout seems to be required for NVIDIA drivers
-        // (see https://github.com/google/filament/pull/3190), but the Android NDK validation layers
-        // make the following complaint:
-        //
-        //   You cannot transition the layout [...] from VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-        //   when the previous known layout is VK_IMAGE_LAYOUT_PRESENT_SRC_KHR. The Vulkan spec
-        //   states: oldLayout must be VK_IMAGE_LAYOUT_UNDEFINED or the current layout of the image
-        //   subresources affected by the barrier
-        //
-        //   (https://www.khronos.org/registry/vulkan/specs/1.1-extensions/html/vkspec.html#VUID-VkImageMemoryBarrier-oldLayout-01197)
-#ifdef __ANDROID__
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-#else
-        // If nothing was rendered, then the layout was never transitioned to COLOR_ATTACHMENT_OPTIMAL.
-        .oldLayout = firstRenderPass ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-#endif
-
+        .oldLayout = swapContext.layout,
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -325,6 +309,7 @@ void VulkanSwapChain::makePresentable() {
     vkCmdPipelineBarrier(context.commands->get().cmdbuffer,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    swapContext.layout = barrier.newLayout;
 }
 
 static void getHeadlessQueue(VulkanContext& context, VulkanSwapChain& sc) {
@@ -422,7 +407,9 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | // Allows use as a blit destination.
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,  // Allows use as a blit source (for readPixels)
         };
         assert_invariant(iCreateInfo.extent.width > 0);
         assert_invariant(iCreateInfo.extent.height > 0);

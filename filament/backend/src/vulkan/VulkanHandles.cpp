@@ -234,6 +234,10 @@ VulkanAttachment VulkanRenderTarget::getMsaaColor(int target) const {
     return mMsaaAttachments[target];
 }
 
+VulkanAttachment& VulkanRenderTarget::getDepth(VulkanSwapChain* currentSurface) {
+    return mOffscreen ? mDepth : currentSurface->depth;
+}
+
 VulkanAttachment VulkanRenderTarget::getDepth(VulkanSwapChain* currentSurface) const {
     return mOffscreen ? mDepth : currentSurface->depth;
 }

@@ -58,6 +58,7 @@ struct VulkanRenderTarget : private HwRenderTarget {
     VkExtent2D getExtent(VulkanSwapChain* currentSurface) const;
     VulkanAttachment getColor(VulkanSwapChain* currentSurface, int target) const;
     VulkanAttachment getMsaaColor(int target) const;
+    VulkanAttachment& getDepth(VulkanSwapChain* currentSurface);
     VulkanAttachment getDepth(VulkanSwapChain* currentSurface) const;
     VulkanAttachment getMsaaDepth() const;
     int getColorTargetCount(const VulkanRenderPass& pass) const;
