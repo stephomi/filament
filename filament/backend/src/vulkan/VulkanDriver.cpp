@@ -1046,7 +1046,13 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         }
     }
 
-    VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey, rt->isSwapChain());
+    // If this is the swap chain, its layout might still be PRESENT, so it will be changed here,
+    // using the render pass.
+    if (rt->isSwapChain()) {
+        sc->getColor().layout = VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey);
     mPipelineCache.bindRenderPass(renderPass, 0);
 
     // Create the VkFramebuffer or fetch it from cache.
@@ -1159,14 +1165,6 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         .currentSubpass = 0,
         .depthFeedback = depthFeedback
     };
-
-    // If the render target is a swap chain, then the render pass will transition it into
-    // VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. Other types of color targets have their layout
-    // preserved.
-    if (rt->isSwapChain()) {
-        assert_invariant(rt->getColorTargetCount(mContext.currentRenderPass) == 1);
-        sc->getColor().layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    }
 }
 
 void VulkanDriver::endRenderPass(int) {
@@ -1518,8 +1516,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
     };
 
     VkImage srcImage = srcAttachment.image;
-
-    printf("prideout readPixels %p => %p\n", srcImage, stagingImage);
 
     transitionImageLayout(cmdbuffer, {
         .image = srcImage,

@@ -119,10 +119,10 @@ VkFramebuffer VulkanFboCache::getFramebuffer(FboKey config) noexcept {
     return framebuffer;
 }
 
-VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config, bool isSwapChain) noexcept {
+VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
     auto iter = mRenderPassCache.find(config);
     if (UTILS_LIKELY(iter != mRenderPassCache.end() && iter->second.handle != VK_NULL_HANDLE)) {
-        iter.value().timestamp = mCurrentTime;
+        iter.value().timestamp =    mCurrentTime;
         return iter->second.handle;
     }
 
@@ -137,24 +137,18 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config, bool isSwapChai
 
     // In Vulkan, the subpass desc specifies the layout to transition to at the start of the render
     // pass, and the attachment description specifies the layout to transition to at the end.
-    // However we use render passes to cause layout transitions only when drawing directly into the
-    // swap chain.
-    const bool discard = any(config.discardStart & TargetBufferFlags::COLOR);
     struct { VkImageLayout subpass, initial, final; } colorLayouts[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT];
-    if (isSwapChain) {
-        colorLayouts[0].subpass = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
+        colorLayouts[i].subpass = config.colorLayout[i];
+        colorLayouts[i].initial = config.colorLayout[i];
+        colorLayouts[i].final = config.colorLayout[i];
+    }
 
-        // Specifying UNDEFINED for "initial" can discard the existing data.
-        colorLayouts[0].initial = discard ? VK_IMAGE_LAYOUT_UNDEFINED :
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        colorLayouts[0].final = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    } else {
-        for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-            colorLayouts[i].subpass = config.colorLayout[i];
-            colorLayouts[i].initial = config.colorLayout[i];
-            colorLayouts[i].final = config.colorLayout[i];
-        }
+    // The render target might be the swap chain, in which case its layout might need to change.
+    if (config.colorLayout[0] == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ||
+            config.colorLayout[0] == VK_IMAGE_LAYOUT_UNDEFINED) {
+        colorLayouts[0].subpass = VK_IMAGE_LAYOUT_GENERAL;
+        colorLayouts[0].final = VK_IMAGE_LAYOUT_GENERAL;
     }
 
     VkAttachmentReference inputAttachmentRef[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT] = {};
@@ -284,7 +278,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config, bool isSwapChai
         }
 
         pResolveAttachment->attachment = attachmentIndex;
-        pResolveAttachment->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        pResolveAttachment->layout = VK_IMAGE_LAYOUT_GENERAL;
         ++pResolveAttachment;
 
         attachments[attachmentIndex++] = {

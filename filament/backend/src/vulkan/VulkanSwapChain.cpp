@@ -43,12 +43,13 @@ bool VulkanSwapChain::acquire() {
         suboptimal = true;
     }
 
+    // TODO: this seems questionable...it's true the first time, but is it true subsequent times?
+    this->getColor().layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
     // To ensure that the next command buffer submission does not write into the image before
     // it has been acquired, push the image available semaphore into the command buffer manager.
     context.commands->injectDependency(imageAvailable);
     acquired = true;
-
-    color[currentSwapIndex].layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     assert_invariant(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR);
     return true;
@@ -283,9 +284,6 @@ void VulkanSwapChain::destroy() {
 // an image barrier rather than a render pass because each render pass does not know whether or not
 // it is the last pass in the frame. (This seems to be an atypical way of achieving the transition,
 // but I see nothing wrong with it.)
-//
-// Note however that we *do* use a render pass to transition the swap chain back to
-// VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL on the subsequent frame that writes to it.
 void VulkanSwapChain::makePresentable() {
     if (headlessQueue) {
         return;

@@ -95,7 +95,7 @@ public:
     VkFramebuffer getFramebuffer(FboKey config) noexcept;
 
     // Retrieves or creates a VkRenderPass handle.
-    VkRenderPass getRenderPass(RenderPassKey config, bool isSwapChain) noexcept;
+    VkRenderPass getRenderPass(RenderPassKey config) noexcept;
 
     // Evicts old unused Vulkan objects. Call this once per frame.
     void gc() noexcept;

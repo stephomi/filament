@@ -129,9 +129,7 @@ void VulkanBlitter::blitFast(VkImageAspectFlags aspect, VkFilter filter,
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
-    const VkImageLayout srcLayout = src.texture ?
-        getDefaultImageLayout(src.texture->usage) :
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    const VkImageLayout srcLayout = getDefaultImageLayout(src.texture->usage);
 
     transitionImageLayout(cmdbuffer, {
         src.image,
@@ -275,7 +273,7 @@ void VulkanBlitter::blitSlowDepth(VkImageAspectFlags aspect, VkFilter filter,
         .samples = 1,
     };
 
-    const VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey, false);
+    const VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey);
     mPipelineCache.bindRenderPass(renderPass, 0);
 
     const VulkanFboCache::FboKey fbkey {
