@@ -28,6 +28,14 @@ namespace backend {
 bool VulkanSwapChain::acquire() {
     if (headlessQueue) {
         currentSwapIndex = (currentSwapIndex + 1) % color.size();
+
+        // Next we perform a quick sanity check on layout for headless swap chains. It's easier to
+        // catch errors here than with validation. If this is the first time a particular image has
+        // been acquired, it should be in an UNDEFINED state. If this is not the first time, then it
+        // should be in the normal layout that we use for color attachments.
+        assert_invariant(this->getColor().layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+                this->getColor().layout == getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT));
+
         return true;
     }
 
@@ -42,6 +50,11 @@ bool VulkanSwapChain::acquire() {
         slog.w << "Vulkan Driver: Suboptimal swap chain." << io::endl;
         suboptimal = true;
     }
+
+    // Next perform a quick sanity check on the image layout. Similar to attachable textures, we
+    // immediately transition the swap chain image layout during the first render pass of the frame.
+    assert_invariant(this->getColor().layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+            this->getColor().layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     // To ensure that the next command buffer submission does not write into the image before
     // it has been acquired, push the image available semaphore into the command buffer manager.
@@ -105,27 +118,9 @@ static void createFinalDepthBuffer(VulkanContext& context, VulkanSwapChain& surf
     surfaceContext.depth.view = depthView;
     surfaceContext.depth.image = depthImage;
     surfaceContext.depth.format = depthFormat;
-    surfaceContext.depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    surfaceContext.depth.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    // Begin a new command buffer solely for the purpose of transitioning the image layout.
-    VkCommandBuffer cmdbuffer = context.commands->get().cmdbuffer;
-
-    // Transition the depth image into an optimal layout.
-    VkImageMemoryBarrier barrier {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .newLayout = surfaceContext.depth.layout,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = depthImage,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-    vkCmdPipelineBarrier(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    printf("prideout SC depth is %p\n", depthImage);
 }
 
 void VulkanSwapChain::create() {
@@ -221,7 +216,10 @@ void VulkanSwapChain::create() {
             .view = {},
             .memory = {},
             .texture = {},
-            .layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+
+            // Swap chain images initially have UNDEFINED layout.
+            // We transition their layout to GENERAL right after calling vkAcquireNextImageKHR.
+            .layout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
     }
     slog.i
@@ -281,37 +279,16 @@ void VulkanSwapChain::destroy() {
 // an image barrier rather than a render pass because each render pass does not know whether or not
 // it is the last pass in the frame. (This seems to be an atypical way of achieving the transition,
 // but I see nothing wrong with it.)
-//
-// Note however that we *do* use a render pass to transition the swap chain back to
-// VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL on the subsequent frame that writes to it.
 void VulkanSwapChain::makePresentable() {
     if (headlessQueue) {
         return;
     }
     VulkanAttachment& swapContext = color[currentSwapIndex];
-    assert_invariant(swapContext.layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     VkImageMemoryBarrier barrier {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = 0,
-
-        // Using COLOR_ATTACHMENT_OPTIMAL for oldLayout seems to be required for NVIDIA drivers
-        // (see https://github.com/google/filament/pull/3190), but the Android NDK validation layers
-        // make the following complaint:
-        //
-        //   You cannot transition the layout [...] from VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-        //   when the previous known layout is VK_IMAGE_LAYOUT_PRESENT_SRC_KHR. The Vulkan spec
-        //   states: oldLayout must be VK_IMAGE_LAYOUT_UNDEFINED or the current layout of the image
-        //   subresources affected by the barrier
-        //
-        //   (https://www.khronos.org/registry/vulkan/specs/1.1-extensions/html/vkspec.html#VUID-VkImageMemoryBarrier-oldLayout-01197)
-#ifdef __ANDROID__
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-#else
-        // If nothing was rendered, then the layout was never transitioned to COLOR_ATTACHMENT_OPTIMAL.
-        .oldLayout = firstRenderPass ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-#endif
-
+        .oldLayout = swapContext.layout,
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -325,6 +302,7 @@ void VulkanSwapChain::makePresentable() {
     vkCmdPipelineBarrier(context.commands->get().cmdbuffer,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    swapContext.layout = barrier.newLayout;
 }
 
 static void getHeadlessQueue(VulkanContext& context, VulkanSwapChain& sc) {
@@ -422,7 +400,9 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | // Allows use as a blit destination.
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,  // Allows use as a blit source (for readPixels)
         };
         assert_invariant(iCreateInfo.extent.width > 0);
         assert_invariant(iCreateInfo.extent.height > 0);
@@ -442,7 +422,7 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
 
         color[i] = {
             .format = surfaceFormat.format, .image = image,
-            .view = {}, .memory = imageMemory, .texture = {}, .layout = VK_IMAGE_LAYOUT_GENERAL
+            .view = {}, .memory = imageMemory, .texture = {}, .layout = VK_IMAGE_LAYOUT_UNDEFINED
         };
         VkImageViewCreateInfo ivCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -457,23 +437,6 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
         };
         vkCreateImageView(context.device, &ivCreateInfo, VKALLOC,
                     &color[i].view);
-
-        VkImageMemoryBarrier barrier {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .levelCount = 1,
-                .layerCount = 1,
-            },
-        };
-        vkCmdPipelineBarrier(context.commands->get().cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                &barrier);
     }
 
     clientSize.width = width;

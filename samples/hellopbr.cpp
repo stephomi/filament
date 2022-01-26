@@ -50,6 +50,7 @@ static const char* IBL_FOLDER = "assets/ibl/lightroom_14b";
 
 int main(int argc, char** argv) {
     Config config;
+    config.backend = Backend::VULKAN;
     config.title = "hellopbr";
     config.iblDirectory = FilamentApp::getRootAssetsPath() + IBL_FOLDER;
 

@@ -230,8 +230,16 @@ VulkanAttachment VulkanRenderTarget::getColor(VulkanSwapChain* currentSurface, i
     return (mOffscreen || target > 0) ? mColor[target] : currentSurface->getColor();
 }
 
+VulkanAttachment& VulkanRenderTarget::getColor(VulkanSwapChain* currentSurface, int target) {
+    return (mOffscreen || target > 0) ? mColor[target] : currentSurface->getColor();
+}
+
 VulkanAttachment VulkanRenderTarget::getMsaaColor(int target) const {
     return mMsaaAttachments[target];
+}
+
+VulkanAttachment& VulkanRenderTarget::getDepth(VulkanSwapChain* currentSurface) {
+    return mOffscreen ? mDepth : currentSurface->depth;
 }
 
 VulkanAttachment VulkanRenderTarget::getDepth(VulkanSwapChain* currentSurface) const {

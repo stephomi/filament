@@ -83,7 +83,7 @@ VulkanPipelineCache::VulkanPipelineCache() : mDefaultRasterState(createDefaultRa
     mDummySamplerWriteInfo.pTexelBufferView = nullptr;
     mDummySamplerWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
-    mDummyTargetInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    mDummyTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     mDummyTargetWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     mDummyTargetWriteInfo.pNext = nullptr;
     mDummyTargetWriteInfo.dstArrayElement = 0;

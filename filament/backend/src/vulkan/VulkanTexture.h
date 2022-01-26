@@ -46,6 +46,9 @@ struct VulkanTexture : public HwTexture {
     // Sets the min/max range of miplevels in the primary image view.
     void setPrimaryRange(uint32_t minMiplevel, uint32_t maxMiplevel);
 
+    // If any primary views are invalid, this asserts in Debug and returns false in Release.
+    bool validatePrimaryImageView() const;
+
     // Gets or creates a cached VkImageView for a single subresource that can be used as a render
     // target attachment.  Unlike the primary image view, this always has type VK_IMAGE_VIEW_TYPE_2D
     // and the identity swizzle.
@@ -60,6 +63,9 @@ struct VulkanTexture : public HwTexture {
 
     void transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
             VkImageLayout newLayout);
+
+    // Notifies the texture that a particular subresource's layout has changed.
+    void trackLayout(uint32_t miplevel, uint32_t layer, VkImageLayout layout);
 
 private:
     // Gets or creates a cached VkImageView for a range of miplevels and array layers.

@@ -17,6 +17,7 @@
 #include "VulkanBlitter.h"
 #include "VulkanContext.h"
 #include "VulkanHandles.h"
+#include "VulkanUtility.h"
 
 #include <utils/FixedCapacityVector.h>
 #include <utils/Panic.h>
@@ -129,27 +130,13 @@ void VulkanBlitter::blitFast(VkImageAspectFlags aspect, VkFilter filter,
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
-    const VkImageLayout srcLayout = src.texture ?
-        getDefaultImageLayout(src.texture->usage) :
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    assert_invariant(src.texture && dst.texture &&
+            "Vulkan backend does not yet support SwapChain blits");
 
-    transitionImageLayout(cmdbuffer, {
-        src.image,
-        srcLayout,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        srcRange,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT
-    });
+    // TODO: the transitions are not necessary if the existing layout is GENERAL
 
-    transitionImageLayout(cmdbuffer, {
-        dst.image,
-        VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        dstRange,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-    });
+    src.texture->transitionLayout(cmdbuffer, srcRange, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    dst.texture->transitionLayout(cmdbuffer, dstRange, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     if (src.texture && src.texture->samples > 1 && dst.texture && dst.texture->samples == 1) {
         assert_invariant(aspect != VK_IMAGE_ASPECT_DEPTH_BIT && "Resolve with depth is not yet supported.");
@@ -160,25 +147,8 @@ void VulkanBlitter::blitFast(VkImageAspectFlags aspect, VkFilter filter,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, blitRegions, filter);
     }
 
-    transitionImageLayout(cmdbuffer, blitterTransitionHelper({
-        .image = src.image,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .newLayout = srcLayout,
-        .subresources = srcRange
-    }));
-
-    // Determine the desired texture layout for the destination while ensuring that the default
-    // render target is supported, which has no associated texture.
-    const VkImageLayout desiredLayout = dst.texture ?
-            getDefaultImageLayout(dst.texture->usage) :
-            mContext.currentSurface->getColor().layout;
-
-    transitionImageLayout(cmdbuffer, blitterTransitionHelper({
-        .image = dst.image,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = desiredLayout,
-        .subresources = dstRange,
-    }));
+    src.texture->transitionLayout(cmdbuffer, srcRange, getDefaultImageLayout(src.texture->usage));
+    dst.texture->transitionLayout(cmdbuffer, dstRange, getDefaultImageLayout(dst.texture->usage));
 }
 
 void VulkanBlitter::shutdown() noexcept {
@@ -265,10 +235,8 @@ void VulkanBlitter::blitSlowDepth(VkImageAspectFlags aspect, VkFilter filter,
     // BEGIN RENDER PASS
     // -----------------
 
-    const VkImageLayout layout = getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT);
-
     const VulkanFboCache::RenderPassKey rpkey = {
-        .depthLayout = layout,
+        .existingDepthLayout = dst.layout,
         .depthFormat = dst.format,
         .clear = {},
         .discardStart = TargetBufferFlags::DEPTH,
@@ -364,12 +332,14 @@ void VulkanBlitter::blitSlowDepth(VkImageAspectFlags aspect, VkFilter filter,
     // Select nearest filtering and clamp_to_edge.
     VkSampler vksampler = mSamplerCache.getSampler({});
 
+    const VkImageLayout layout = getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT);
+
     VkDescriptorImageInfo samplers[VulkanPipelineCache::SAMPLER_BINDING_COUNT];
     for (auto& sampler : samplers) {
         sampler = {
             .sampler = vksampler,
             .imageView = mContext.emptyTexture->getPrimaryImageView(),
-            .imageLayout = VK_IMAGE_LAYOUT_GENERAL
+            .imageLayout = layout
         };
     }
 

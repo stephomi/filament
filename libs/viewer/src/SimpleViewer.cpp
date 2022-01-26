@@ -371,7 +371,7 @@ SimpleViewer::SimpleViewer(filament::Engine* engine, filament::Scene* scene, fil
     mSettings.view.dithering = Dithering::TEMPORAL;
     mSettings.view.antiAliasing = AntiAliasing::FXAA;
     mSettings.view.msaa = { .enabled = true, .sampleCount = 4 };
-    mSettings.view.ssao.enabled = true;
+    mSettings.view.ssao.enabled = false;
     mSettings.view.bloom.enabled = true;
 
     using namespace filament;
