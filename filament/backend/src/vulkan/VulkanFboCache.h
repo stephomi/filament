@@ -39,9 +39,9 @@ public:
     // RenderPassKey is a small POD representing the immutable state that is used to construct
     // a VkRenderPass. It is hashed and used as a lookup key.
     struct alignas(8) RenderPassKey {
-        VkImageLayout colorLayout[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT];  // 32 bytes
+        VkImageLayout existingColorLayout[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT];  // 32 bytes
         VkFormat colorFormat[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT]; // 32 bytes
-        VkImageLayout depthLayout;  // 4 bytes
+        VkImageLayout existingDepthLayout;  // 4 bytes
         VkFormat depthFormat; // 4 bytes
         TargetBufferFlags clear; // 4 bytes
         TargetBufferFlags discardStart; // 4 bytes

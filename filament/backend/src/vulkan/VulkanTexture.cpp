@@ -173,17 +173,6 @@ VulkanTexture::VulkanTexture(VulkanContext& context, SamplerType target, uint8_t
 
     // Go ahead and create the primary image view, no need to do it lazily.
     getImageView(mPrimaryViewRange);
-
-    // Transition the layout of each image slice that might be used as a render target.
-    // We do not transition images that are merely SAMPLEABLE, this is deferred until upload time
-    // because we do not know how many layers and levels will actually be used.
-    if (any(usage & (TextureUsage::COLOR_ATTACHMENT | TextureUsage::DEPTH_ATTACHMENT))) {
-        const uint32_t layers = mPrimaryViewRange.layerCount;
-        VkImageSubresourceRange range = { mAspect, 0, levels, 0, layers };
-        VkImageLayout layout = getDefaultImageLayout(usage);
-        VkCommandBuffer commands = mContext.commands->get().cmdbuffer;
-        transitionLayout(commands, range, layout);
-    }
 }
 
 VulkanTexture::~VulkanTexture() {
@@ -407,6 +396,8 @@ VkImageView VulkanTexture::getImageView(VkImageSubresourceRange range) {
 
 void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
         VkImageLayout newLayout) {
+    assert_invariant(newLayout != VK_IMAGE_LAYOUT_UNDEFINED);
+
     // In debug builds, ensure that all subresources in the given range have the same layout.
     // It's easier to catch a mistake here than with validation, which waits until submission time.
     VkImageLayout oldLayout = getVkLayout(range.baseArrayLayer, range.baseMipLevel);
@@ -432,7 +423,7 @@ void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubr
     const uint32_t last_layer = first_layer + range.layerCount;
     const uint32_t first_level = range.baseMipLevel;
     const uint32_t last_level = first_level + range.levelCount;
-    if (newLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+    if (UTILS_UNLIKELY(newLayout == VK_IMAGE_LAYOUT_UNDEFINED)) {
         for (uint32_t layer = first_layer; layer < last_layer; ++layer) {
             const uint32_t first = (layer << 16) | first_level;
             const uint32_t last = (layer << 16) | last_level;
@@ -444,6 +435,17 @@ void VulkanTexture::transitionLayout(VkCommandBuffer commands, const VkImageSubr
             const uint32_t last = (layer << 16) | last_level;
             mSubresourceLayouts.add(first, last, newLayout);
         }
+    }
+}
+
+// Notifies the texture that a particular subresource's layout has changed.
+void VulkanTexture::trackLayout(uint32_t miplevel, uint32_t layer, VkImageLayout layout) {
+    const uint32_t first = (layer << 16) | miplevel;
+    const uint32_t last = (layer << 16) | (miplevel + 1);
+    if (UTILS_UNLIKELY(layout == VK_IMAGE_LAYOUT_UNDEFINED)) {
+        mSubresourceLayouts.clear(first, last);
+    } else {
+        mSubresourceLayouts.add(first, last, layout);
     }
 }
 

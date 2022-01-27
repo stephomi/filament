@@ -61,6 +61,9 @@ struct VulkanTexture : public HwTexture {
     void transitionLayout(VkCommandBuffer commands, const VkImageSubresourceRange& range,
             VkImageLayout newLayout);
 
+    // Notifies the texture that a particular subresource's layout has changed.
+    void trackLayout(uint32_t miplevel, uint32_t layer, VkImageLayout layout);
+
 private:
     // Gets or creates a cached VkImageView for a range of miplevels and array layers.
     VkImageView getImageView(VkImageSubresourceRange range);

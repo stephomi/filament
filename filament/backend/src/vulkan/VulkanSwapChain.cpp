@@ -28,6 +28,14 @@ namespace backend {
 bool VulkanSwapChain::acquire() {
     if (headlessQueue) {
         currentSwapIndex = (currentSwapIndex + 1) % color.size();
+
+        // Next we perform a quick sanity check on layout for headless swap chains. It's easier to
+        // catch errors here than with validation. If this is the first time a particular image has
+        // been acquired, it should be in an UNDEFINED state. If this is not the first time, then it
+        // should be in the normal layout that we use for color attachments.
+        assert_invariant(this->getColor().layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+                this->getColor().layout == getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT));
+
         return true;
     }
 
@@ -43,8 +51,10 @@ bool VulkanSwapChain::acquire() {
         suboptimal = true;
     }
 
-    // TODO: this seems questionable...it's true the first time, but is it true subsequent times?
-    this->getColor().layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Next perform a quick sanity check on the image layout. Similar to attachable textures, we
+    // immediately transition the swap chain image layout during the first render pass of the frame.
+    assert_invariant(this->getColor().layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+            this->getColor().layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     // To ensure that the next command buffer submission does not write into the image before
     // it has been acquired, push the image available semaphore into the command buffer manager.
@@ -224,7 +234,10 @@ void VulkanSwapChain::create() {
             .view = {},
             .memory = {},
             .texture = {},
-            .layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+
+            // Swap chain images initially have UNDEFINED layout.
+            // We transition their layout to GENERAL right after calling vkAcquireNextImageKHR.
+            .layout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
     }
     slog.i
@@ -427,7 +440,7 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
 
         color[i] = {
             .format = surfaceFormat.format, .image = image,
-            .view = {}, .memory = imageMemory, .texture = {}, .layout = VK_IMAGE_LAYOUT_GENERAL
+            .view = {}, .memory = imageMemory, .texture = {}, .layout = VK_IMAGE_LAYOUT_UNDEFINED
         };
         VkImageViewCreateInfo ivCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -442,23 +455,6 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
         };
         vkCreateImageView(context.device, &ivCreateInfo, VKALLOC,
                     &color[i].view);
-
-        VkImageMemoryBarrier barrier {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .levelCount = 1,
-                .layerCount = 1,
-            },
-        };
-        vkCmdPipelineBarrier(context.commands->get().cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                &barrier);
     }
 
     clientSize.width = width;

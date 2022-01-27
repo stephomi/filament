@@ -1005,9 +1005,12 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
     VulkanAttachment& depth = rt->getDepth(sc);
     VulkanTexture* depthFeedback = nullptr;
 
+    VkImageLayout desiredDepthLayout = getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT);
+
     // If an uncleared depth buffer is attached but discarded at the end of the pass, then we should
     // permit the shader to sample from it by transitioning the layout of all its subresources to a
     // read-only layout. This is especially crucial for SSAO.
+    // TODO: perform this transition using the render pass rather than an explicit barrier.
     if (depth.texture && any(params.flags.discardEnd & TargetBufferFlags::DEPTH) &&
             !any(params.flags.clear & TargetBufferFlags::DEPTH)) {
         depthFeedback = depth.texture;
@@ -1024,12 +1027,18 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
             .dstStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
         };
         transitionImageLayout(cmdbuffer, transition);
-        depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        desiredDepthLayout = depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     }
+
+    if (depth.texture) {
+        depth.texture->trackLayout(depth.level, depth.layer, desiredDepthLayout);
+    }
+
+    const VkImageLayout desiredColorLayout = getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT);
 
     // Create the VkRenderPass or fetch it from cache.
     VulkanFboCache::RenderPassKey rpkey = {
-        .depthLayout = depth.layout,
+        .existingDepthLayout = depth.layout,
         .depthFormat = depth.format,
         .clear = params.flags.clear,
         .discardStart = discardStart,
@@ -1038,18 +1047,24 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         .subpassMask = uint8_t(params.subpassMask)
     };
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        rpkey.colorLayout[i] = rt->getColor(sc, i).layout;
-        rpkey.colorFormat[i] = rt->getColor(sc, i).format;
-        VulkanTexture* texture = rt->getColor(sc, i).texture;
+        const VulkanAttachment attachment = rt->getColor(sc, i);
+        rpkey.existingColorLayout[i] = attachment.layout;
+        rpkey.colorFormat[i] = attachment.format;
+        VulkanTexture* texture = attachment.texture;
         if (rpkey.samples > 1 && texture && texture->samples == 1) {
             rpkey.needsResolveMask |= (1 << i);
         }
+
+        // The FboCache can change the image layout, so the texture needs to be notified.
+        if (texture) {
+            texture->trackLayout(attachment.level, attachment.layer, desiredColorLayout);
+        }
     }
 
-    // If this is the swap chain, its layout might still be PRESENT, so it will be changed here,
-    // using the render pass.
+    // The FboCache can change the image layout, so notify the swap chain if it's the render target.
     if (rt->isSwapChain()) {
-        sc->getColor().layout = VK_IMAGE_LAYOUT_GENERAL;
+        sc->getColor().layout = desiredColorLayout;
+        sc->depth.layout = desiredDepthLayout;
     }
 
     VkRenderPass renderPass = mFramebufferCache.getRenderPass(rpkey);
@@ -1505,7 +1520,7 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         },
     };
 
-    // Transition the source image layout (which might be the swap chain)
+    // Transition the source image layout.
 
     const VkImageSubresourceRange srcRange = {
         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,

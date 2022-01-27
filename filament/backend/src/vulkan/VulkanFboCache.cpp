@@ -19,6 +19,7 @@
 #include <utils/Panic.h>
 
 #include "VulkanConstants.h"
+#include "VulkanUtility.h"
 
 // If any VkRenderPass or VkFramebuffer is unused for more than TIME_BEFORE_EVICTION frames, it
 // is evicted from the cache.
@@ -37,10 +38,10 @@ bool VulkanFboCache::RenderPassEq::operator()(const RenderPassKey& k1,
     if (k1.samples != k2.samples) return false;
     if (k1.needsResolveMask != k2.needsResolveMask) return false;
     if (k1.subpassMask != k2.subpassMask) return false;
-    if (k1.depthLayout != k2.depthLayout) return false;
+    if (k1.existingDepthLayout != k2.existingDepthLayout) return false;
     if (k1.depthFormat != k2.depthFormat) return false;
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        if (k1.colorLayout[i] != k2.colorLayout[i]) return false;
+        if (k1.existingColorLayout[i] != k2.existingColorLayout[i]) return false;
         if (k1.colorFormat[i] != k2.colorFormat[i]) return false;
     }
     return true;
@@ -138,17 +139,11 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
     // In Vulkan, the subpass desc specifies the layout to transition to at the start of the render
     // pass, and the attachment description specifies the layout to transition to at the end.
     struct { VkImageLayout subpass, initial, final; } colorLayouts[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT];
+    const VkImageLayout desiredLayout = getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT);
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        colorLayouts[i].subpass = config.colorLayout[i];
-        colorLayouts[i].initial = config.colorLayout[i];
-        colorLayouts[i].final = config.colorLayout[i];
-    }
-
-    // The render target might be the swap chain, in which case its layout might need to change.
-    if (config.colorLayout[0] == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ||
-            config.colorLayout[0] == VK_IMAGE_LAYOUT_UNDEFINED) {
-        colorLayouts[0].subpass = VK_IMAGE_LAYOUT_GENERAL;
-        colorLayouts[0].final = VK_IMAGE_LAYOUT_GENERAL;
+        colorLayouts[i].subpass = desiredLayout;
+        colorLayouts[i].initial = config.existingColorLayout[i];
+        colorLayouts[i].final = desiredLayout;
     }
 
     VkAttachmentReference inputAttachmentRef[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT] = {};
@@ -244,6 +239,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         const bool clear = any(config.clear & flag);
         const bool discard = any(config.discardStart & flag);
 
+        assert_invariant(colorLayouts[i].final != VK_IMAGE_LAYOUT_UNDEFINED);
         attachments[attachmentIndex++] = {
             .format = config.colorFormat[i],
             .samples = (VkSampleCountFlagBits) config.samples,
@@ -281,6 +277,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         pResolveAttachment->layout = VK_IMAGE_LAYOUT_GENERAL;
         ++pResolveAttachment;
 
+        assert_invariant(colorLayouts[i].final != VK_IMAGE_LAYOUT_UNDEFINED);
         attachments[attachmentIndex++] = {
             .format = config.colorFormat[i],
             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -298,8 +295,14 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         const bool clear = any(config.clear & TargetBufferFlags::DEPTH);
         const bool discardStart = any(config.discardStart & TargetBufferFlags::DEPTH);
         const bool discardEnd = any(config.discardEnd & TargetBufferFlags::DEPTH);
-        depthAttachmentRef.layout = config.depthLayout;
+
+        VkImageLayout desiredDepthLayout = config.existingDepthLayout  == VK_IMAGE_LAYOUT_UNDEFINED ?
+                getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT) :
+                config.existingDepthLayout;
+
+        depthAttachmentRef.layout = desiredDepthLayout;
         depthAttachmentRef.attachment = attachmentIndex;
+
         attachments[attachmentIndex++] = {
             .format = config.depthFormat,
             .samples = (VkSampleCountFlagBits) config.samples,
@@ -307,8 +310,8 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
             .storeOp = discardEnd ? kDisableStore : kEnableStore,
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = config.depthLayout,
-            .finalLayout = config.depthLayout
+            .initialLayout = config.existingDepthLayout,
+            .finalLayout = desiredDepthLayout
         };
     }
     renderPassInfo.attachmentCount = attachmentIndex;
