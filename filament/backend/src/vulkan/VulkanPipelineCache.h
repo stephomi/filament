@@ -181,19 +181,20 @@ public:
     void onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) override;
 
     // Injects a dummy texture that can be used to clear out old descriptor sets.
-    void setDummyTexture(VkImageView imageView) { mDummyImageView = imageView; }
+    void setDummyTexture(VkImageView imageView) {
+        mDummySamplerInfo.imageView = imageView;
+        mDummyTargetInfo.imageView = imageView;
+    }
 
 private:
     static constexpr uint32_t ALL_COMMAND_BUFFERS = (1 << VK_MAX_COMMAND_BUFFERS) - 1;
 
     using LayoutBundleKey = utils::bitset64; // 2 bits(vertex and fragment) per sampler * 32 samplers
 
-    static LayoutBundleKey getLayoutBundleKey(const Program::SamplerGroupInfo& samplerGroupInfo) noexcept;
-
     struct LayoutBundle {
         std::array<VkDescriptorSetLayout, DESCRIPTOR_TYPE_COUNT> setLayouts;
         VkPipelineLayout pipelineLayout;
-        std::vector<VkDescriptorSet> setArena[DESCRIPTOR_TYPE_COUNT];
+        std::vector<VkDescriptorSet> setArenas[DESCRIPTOR_TYPE_COUNT];
         int32_t referenceCount = 0;
     };
 
@@ -264,6 +265,9 @@ private:
     struct DescriptorBundle {
         VkDescriptorSet handles[DESCRIPTOR_TYPE_COUNT];
         LayoutBundle* layoutBundle = nullptr;
+
+        // This bitset points to the command buffers that contain references to this bundle.
+        // The descriptors are safe to reclaim when there are no command buffers that refer to it.
         utils::bitset32 commandBuffers;
     };
 
@@ -292,7 +296,7 @@ private:
     void getOrCreateDescriptors(VkDescriptorSet descriptors[DESCRIPTOR_TYPE_COUNT],
             bool* bind, bool* overflow) noexcept;
 
-    LayoutBundle* getOrCreateLayoutBundle() noexcept;
+    LayoutBundle* getOrCreatePipelineLayout() noexcept;
 
     // Returns true if any pipeline bindings have changed. (i.e., vkCmdBindPipeline is required)
     bool getOrCreatePipeline(VkPipeline* pipeline) noexcept;
@@ -338,7 +342,6 @@ private:
     std::vector<VkDescriptorPool> mExtinctDescriptorPools;
     std::vector<DescriptorBundle> mExtinctDescriptorBundles;
 
-    VkImageView mDummyImageView = VK_NULL_HANDLE;
     VkDescriptorBufferInfo mDummyBufferInfo = {};
     VkWriteDescriptorSet mDummyBufferWriteInfo = {};
     VkDescriptorImageInfo mDummySamplerInfo = {};
