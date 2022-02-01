@@ -194,7 +194,7 @@ private:
         std::array<VkDescriptorSetLayout, DESCRIPTOR_TYPE_COUNT> setLayouts;
         VkPipelineLayout pipelineLayout;
         std::vector<VkDescriptorSet> setArena[DESCRIPTOR_TYPE_COUNT];
-        uint32_t referenceCount = 0;
+        int32_t referenceCount = 0;
     };
 
     struct LayoutBundleHashFn {

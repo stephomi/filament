@@ -473,9 +473,9 @@ int main(int argc, char** argv) {
         if (batchMode) {
             app.automationEngine->startBatchMode();
             auto options = app.automationEngine->getOptions();
-            options.sleepDuration = 0.0;
-            options.exportScreenshots = true;
-            options.exportSettings = true;
+            options.sleepDuration = 0.01;
+            // options.exportScreenshots = true;
+            // options.exportSettings = true;
             app.automationEngine->setOptions(options);
             app.viewer->stopAnimation();
         }

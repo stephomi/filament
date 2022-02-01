@@ -811,7 +811,7 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
     for (ConstPipeIterator iter = mPipelines.begin(); iter != mPipelines.end();) {
         if (iter.value().age > VK_MAX_PIPELINE_AGE) {
             --iter->second.layoutBundle->referenceCount;
-            vkDestroyPipeline(mDevice, iter->second.handle, VKALLOC);
+            // vkDestroyPipeline(mDevice, iter->second.handle, VKALLOC);
             iter = mPipelines.erase(iter);
         } else {
             ++iter;
@@ -821,11 +821,11 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
     // Evict any layouts that have not been used in a while.
     using ConstLayoutIterator = decltype(mLayouts)::const_iterator;
     for (ConstLayoutIterator iter = mLayouts.begin(); iter != mLayouts.end();) {
-        if (iter->second.referenceCount == 0) {
-            vkDestroyPipelineLayout(mDevice, iter->second.pipelineLayout, VKALLOC);
-            for (auto setLayout : iter->second.setLayouts) {
-                vkDestroyDescriptorSetLayout(mDevice, setLayout, VKALLOC);
-            }
+        if (iter->second.referenceCount <= 0) {
+            // vkDestroyPipelineLayout(mDevice, iter->second.pipelineLayout, VKALLOC);
+            // for (auto setLayout : iter->second.setLayouts) {
+            //     vkDestroyDescriptorSetLayout(mDevice, setLayout, VKALLOC);
+            // }
             iter = mLayouts.erase(iter);
         } else {
             ++iter;
