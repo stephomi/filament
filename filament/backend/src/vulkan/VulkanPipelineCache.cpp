@@ -163,11 +163,13 @@ bool VulkanPipelineCache::bindDescriptors(VkCommandBuffer cmdbuffer) noexcept {
     mCmdBufferState[mCmdBufferIndex].currentDescriptors = mDescriptorKey;
     bundle->commandBuffers.set(mCmdBufferIndex);
 
+    LayoutBundle* layout = getOrCreatePipelineLayout();
+    layout->age = 0;
+
     // If the required descriptor set is different from the one that's already bound,
     // then bind it and clear its dirty flag.
     if (bind) {
         mDirtyDescriptor.unset(mCmdBufferIndex);
-        LayoutBundle* layout = getOrCreatePipelineLayout();
         vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 layout->pipelineLayout, 0, VulkanPipelineCache::DESCRIPTOR_TYPE_COUNT,
                 bundle->handles, 0, nullptr);
@@ -822,9 +824,18 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
     using ConstLayoutIterator = decltype(mLayouts)::const_iterator;
     for (ConstLayoutIterator iter = mLayouts.begin(); iter != mLayouts.end();) {
         if (iter.value().age > VK_MAX_PIPELINE_AGE) {
-            // TODO: should this destroy things in `setArenas`, or reclaim them?
             vkDestroyPipelineLayout(mDevice, iter->second.pipelineLayout, VKALLOC);
             for (auto setLayout : iter->second.setLayouts) {
+#if 1
+                PipelineLayoutKey key = iter.key();
+                for (auto& pair : mDescriptorBundles) {
+                    if (pair.second.pipelineLayout == key) {
+                        printf("Bad condition detected.  DS layout %p is still in use, cmdbuffers=%8.8x\n",
+                                setLayout,
+                                pair.second.commandBuffers.getValue());
+                    }
+                }
+#endif
                 vkDestroyDescriptorSetLayout(mDevice, setLayout, VKALLOC);
             }
             iter = mLayouts.erase(iter);
