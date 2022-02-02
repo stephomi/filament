@@ -193,9 +193,26 @@ private:
 
     struct LayoutBundle {
         std::array<VkDescriptorSetLayout, DESCRIPTOR_TYPE_COUNT> setLayouts;
+
+        // Each pipeline layout has a corresponding arena of unused descriptors.
+        //
+        // The difference between the "arenas" and the "pool" are as follows.
+        //
+        // - The "pool" is a single, centralized factory for all descriptors (VkDescriptorPool).
+        //
+        // - Each "arena" is a set of unused (but alive) descriptors that can only be used with a
+        //   specific pipeline layout and a specific binding type. We manually manage each arena.
+        //   The arenas are created in an empty state, and they are gradually populated as new
+        //   descriptors are reclaimed over time.  This is quite different from the pool, which is
+        //   given a fixed size when it is constructed.
+        //
         std::array<std::vector<VkDescriptorSet>, DESCRIPTOR_TYPE_COUNT> setArenas;
+
         VkPipelineLayout pipelineLayout;
-        int32_t referenceCount = 0;
+
+        // The "age" of a cache entry is the number of command buffer flush events that
+        // have occurred since it was last used in a command buffer.
+        uint32_t age;
     };
 
     struct LayoutKeyHashFn {

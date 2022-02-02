@@ -185,6 +185,10 @@ void VulkanPipelineCache::bindScissor(VkCommandBuffer cmdbuffer, VkRect2D scisso
 void VulkanPipelineCache::getOrCreateDescriptors(
         VkDescriptorSet descriptorSets[DESCRIPTOR_TYPE_COUNT],
         bool* bind, bool* overflow) noexcept {
+    // Create a new pipeline layout or fetch one from the cache.
+    // This need to occur before checking the dirty flags.
+    LayoutBundle* layoutBundle = getOrCreatePipelineLayout();
+
     // Leave early if no bindings have been dirtied.
     if (!mDirtyDescriptor[mCmdBufferIndex]) {
         const DescriptorKey& key = mCmdBufferState[mCmdBufferIndex].currentDescriptors;
@@ -212,11 +216,10 @@ void VulkanPipelineCache::getOrCreateDescriptors(
         return;
     }
 
-    // Create a new pipeline layout or fetch one from the cache.
-    LayoutBundle* layoutBundle = getOrCreatePipelineLayout();
-
-    // If there are no available descriptor sets that can be re-used, then create brand new ones
-    // (one for each type). Otherwise, grab a descriptor set from each of the arenas.
+    // Each of the 3 arenas for this particular layout are guaranteed to have the same size. Check
+    // the first arena to see if any descriptor sets are available that can be re-claimed. If not,
+    // create brand new ones (one for each type). They will be added to the arena later, after they
+    // are no longer used. This occurs during the cleanup phase during command buffer submission.
     auto& descriptorSetArenas = layoutBundle->setArenas;
     if (descriptorSetArenas[0].empty()) {
         if (mDescriptorBundles.size() >= mDescriptorPoolSize) {
@@ -335,6 +338,7 @@ void VulkanPipelineCache::getOrCreateDescriptors(
 VulkanPipelineCache::LayoutBundle* VulkanPipelineCache::getOrCreatePipelineLayout() noexcept {
     auto iter = mLayouts.find(mLayoutKey);
     if (UTILS_LIKELY(iter != mLayouts.end())) {
+        iter.value().age = 0;
         return &iter.value();
     }
 
@@ -391,7 +395,7 @@ VulkanPipelineCache::LayoutBundle* VulkanPipelineCache::getOrCreatePipelineLayou
             &pipelineLayout);
     ASSERT_POSTCONDITION(!err, "Unable to create pipeline layout.");
 
-    auto result = mLayouts.emplace(mLayoutKey, LayoutBundle{ setLayouts, {}, pipelineLayout });
+    auto result = mLayouts.emplace(mLayoutKey, LayoutBundle{ setLayouts, {}, pipelineLayout, 0 });
     return &result.first.value();
 }
 
@@ -566,7 +570,6 @@ bool VulkanPipelineCache::getOrCreatePipeline(VkPipeline* pipeline) noexcept {
         utils::slog.e << "vkCreateGraphicsPipelines error " << err << utils::io::endl;
         utils::debug_trap();
     }
-    ++layout->referenceCount;
 
     const PipelineBundle cacheEntry = { *pipeline, mLayoutKey, 0u };
     mPipelines.emplace(std::make_pair(mPipelineKey, cacheEntry));
@@ -809,10 +812,12 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
         }
     }
 
-    // Increment the "age" of all cached pipelines. If the age of any pipeline is 0, then it is
-    // being used by the command buffer that was just flushed.
-    using PipeIterator = decltype(mPipelines)::iterator;
-    for (PipeIterator iter = mPipelines.begin(); iter != mPipelines.end(); ++iter) {
+    // Increment the "age" of all cached pipelines and layouts. If the age of any item is 0, then it
+    // is being used by the command buffer that was just flushed.
+    for (PipelineMap::iterator iter = mPipelines.begin(); iter != mPipelines.end(); ++iter) {
+        ++iter.value().age;
+    }
+    for (LayoutMap::iterator iter = mLayouts.begin(); iter != mLayouts.end(); ++iter) {
         ++iter.value().age;
     }
 
@@ -821,7 +826,6 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
     using ConstPipeIterator = decltype(mPipelines)::const_iterator;
     for (ConstPipeIterator iter = mPipelines.begin(); iter != mPipelines.end();) {
         if (iter.value().age > VK_MAX_PIPELINE_AGE) {
-            --mLayouts[iter->second.pipelineLayout].referenceCount;
             vkDestroyPipeline(mDevice, iter->second.handle, VKALLOC);
             iter = mPipelines.erase(iter);
         } else {
@@ -832,7 +836,8 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
     // Evict any layouts that have not been used in a while.
     using ConstLayoutIterator = decltype(mLayouts)::const_iterator;
     for (ConstLayoutIterator iter = mLayouts.begin(); iter != mLayouts.end();) {
-        if (iter->second.referenceCount <= 0) {
+        if (iter.value().age > VK_MAX_PIPELINE_AGE) {
+            // TODO: should this destroy things in `setArenas`, or reclaim them?
             vkDestroyPipelineLayout(mDevice, iter->second.pipelineLayout, VKALLOC);
             for (auto setLayout : iter->second.setLayouts) {
                 vkDestroyDescriptorSetLayout(mDevice, setLayout, VKALLOC);

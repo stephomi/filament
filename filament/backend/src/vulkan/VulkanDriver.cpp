@@ -1806,6 +1806,8 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
     // If descriptor set allocation failed, skip the draw call and bail. No need to emit an error
     // message since the validation layers already do so.
     if (!mPipelineCache.bindDescriptors(cmdbuffer)) {
+puts("do not commit this codeline");
+exit(1);
         return;
     }
 
