@@ -290,7 +290,6 @@ private:
 
     struct PipelineBundle {
         VkPipeline handle;
-        PipelineLayoutKey pipelineLayout;
 
         // The "age" of a pipeline cache entry is the number of command buffer flush events that
         // have occurred since it was last used in a command buffer. This is used for LRU caching,
@@ -309,14 +308,15 @@ private:
     };
 
     // If bind is set to true, vkCmdBindDescriptorSets is required.
-    // If overflow is set to true, a descriptor set allocation error has occurred.
-    void getOrCreateDescriptors(VkDescriptorSet descriptors[DESCRIPTOR_TYPE_COUNT],
-            bool* bind, bool* overflow) noexcept;
+    // Returns a transient pointer that should be not stored, or null if an overflow occurred.
+    DescriptorBundle* getOrCreateDescriptors(bool* bind) noexcept;
 
+    // If bind is set to true, vkCmdBindPipeline is required.
+    // Returns a transient pointer that should be not stored.
+    PipelineBundle* getOrCreatePipeline(bool* bind) noexcept;
+
+    // Returns a transient pointer that should be not stored.
     LayoutBundle* getOrCreatePipelineLayout() noexcept;
-
-    // Returns true if any pipeline bindings have changed. (i.e., vkCmdBindPipeline is required)
-    bool getOrCreatePipeline(VkPipeline* pipeline) noexcept;
 
     void destroyLayoutsAndDescriptors() noexcept;
     void markDirtyPipeline() noexcept { mDirtyPipeline.setValue(ALL_COMMAND_BUFFERS); }
