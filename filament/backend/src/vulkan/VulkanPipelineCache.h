@@ -271,7 +271,7 @@ private:
         utils::bitset32 commandBuffers;
     };
 
-    struct PipelineVal {
+    struct PipelineBundle {
         VkPipeline handle;
         PipelineLayoutKey pipelineLayout;
 
@@ -282,12 +282,12 @@ private:
     };
 
     using LayoutMap = tsl::robin_map<PipelineLayoutKey , LayoutBundle, LayoutKeyHashFn, LayoutKeyEqual>;
-    using PipelineMap = tsl::robin_map<PipelineKey, PipelineVal, PipelineHashFn, PipelineEqual>;
+    using PipelineMap = tsl::robin_map<PipelineKey, PipelineBundle, PipelineHashFn, PipelineEqual>;
     using DescriptorMap = tsl::robin_map<DescriptorKey, DescriptorBundle, DescHashFn, DescEqual>;
 
     struct CmdBufferState {
-        PipelineVal* currentPipeline = nullptr;
-        DescriptorBundle* currentDescriptorBundle = nullptr;
+        PipelineKey currentPipeline = {};
+        DescriptorKey currentDescriptors = {};
         VkRect2D scissor = {};
     };
 

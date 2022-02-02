@@ -110,11 +110,8 @@ void VulkanPipelineCache::setDevice(VkDevice device, VmaAllocator allocator) {
     mAllocator = allocator;
     mDescriptorPool = createDescriptorPool(mDescriptorPoolSize);
 
-    // Next, create a small dummy UBO. Filament's fixed-sized binding arrays are nice because they
-    // allow us to track only 1 VkPipelineLayout object. However, we occasionally need to clear
-    // out an unused descriptor set slot. Since Vulkan does not allow specifying VK_NULL_HANDLE
-    // without the robustness2 extension, we are forced to clear out unused UBO slots using a dummy
-    // resource.
+    // Next, create a small dummy UBO
+    // TODO: Now that we have dynamic layouts, do we still need to clear out unused descriptor sets?
 
     VkBufferCreateInfo bufferInfo {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -188,28 +185,30 @@ void VulkanPipelineCache::bindScissor(VkCommandBuffer cmdbuffer, VkRect2D scisso
 void VulkanPipelineCache::getOrCreateDescriptors(
         VkDescriptorSet descriptorSets[DESCRIPTOR_TYPE_COUNT],
         bool* bind, bool* overflow) noexcept {
-    DescriptorBundle*& descriptorBundle = mCmdBufferState[mCmdBufferIndex].currentDescriptorBundle;
-
     // Leave early if no bindings have been dirtied.
     if (!mDirtyDescriptor[mCmdBufferIndex]) {
-        assert_invariant(descriptorBundle);
+        const DescriptorKey& key = mCmdBufferState[mCmdBufferIndex].currentDescriptors;
+        DescriptorMap::iterator descriptorIter = mDescriptorBundles.find(key);
+        assert_invariant(descriptorIter != mDescriptorBundles.end());
+        DescriptorBundle& descriptorBundle = descriptorIter.value();
         for (uint32_t i = 0; i < DESCRIPTOR_TYPE_COUNT; ++i) {
-            descriptorSets[i] = descriptorBundle->handles[i];
+            descriptorSets[i] = descriptorBundle.handles[i];
         }
-        descriptorBundle->commandBuffers.set(mCmdBufferIndex);
+        descriptorBundle.commandBuffers.set(mCmdBufferIndex);
         return;
     }
 
     // If a cached object exists, re-use it.
-    auto iter = mDescriptorBundles.find(mDescriptorKey);
-    if (UTILS_LIKELY(iter != mDescriptorBundles.end())) {
-        descriptorBundle = &iter.value();
+    DescriptorMap::iterator descriptorIter = mDescriptorBundles.find(mDescriptorKey);
+    if (UTILS_LIKELY(descriptorIter != mDescriptorBundles.end())) {
+        DescriptorBundle& descriptorBundle = descriptorIter.value();
         for (uint32_t i = 0; i < DESCRIPTOR_TYPE_COUNT; ++i) {
-            descriptorSets[i] = descriptorBundle->handles[i];
+            descriptorSets[i] = descriptorBundle.handles[i];
         }
-        descriptorBundle->commandBuffers.set(mCmdBufferIndex);
+        descriptorBundle.commandBuffers.set(mCmdBufferIndex);
         mDirtyDescriptor.unset(mCmdBufferIndex);
         *bind = true;
+        mCmdBufferState[mCmdBufferIndex].currentDescriptors = mDescriptorKey;
         return;
     }
 
@@ -241,18 +240,16 @@ void VulkanPipelineCache::getOrCreateDescriptors(
         }
     }
 
-    // Construct a cache entry in place, then stash its pointer to allow fast subsequent calls to
-    // getOrCreateDescriptor when nothing has been dirtied. Note that the robin_map iterator type
-    // proffers a "value" method, which returns a stable reference.
-    auto& bundle = mDescriptorBundles.emplace(std::make_pair(mDescriptorKey, DescriptorBundle {}))
-            .first.value();
+    DescriptorBundle& descriptorBundle = mDescriptorBundles.emplace(
+            std::make_pair(mDescriptorKey, DescriptorBundle {})).first.value();
 
-    descriptorBundle = &bundle;
     for (uint32_t i = 0; i < DESCRIPTOR_TYPE_COUNT; ++i) {
-        descriptorBundle->handles[i] = descriptorSets[i];
+        descriptorBundle.handles[i] = descriptorSets[i];
     }
-    descriptorBundle->pipelineLayout = mLayoutKey;
-    descriptorBundle->commandBuffers.setValue(1 << mCmdBufferIndex);
+    descriptorBundle.pipelineLayout = mLayoutKey;
+    descriptorBundle.commandBuffers.setValue(1 << mCmdBufferIndex);
+
+    mCmdBufferState[mCmdBufferIndex].currentDescriptors = mDescriptorKey;
 
     // Clear the dirty flag for this command buffer.
     mDirtyDescriptor.unset(mCmdBufferIndex);
@@ -286,7 +283,7 @@ void VulkanPipelineCache::getOrCreateDescriptors(
             assert_invariant(mDummyBufferWriteInfo.pBufferInfo->buffer);
         }
         assert_invariant(writeInfo.pBufferInfo->buffer);
-        writeInfo.dstSet = descriptorBundle->handles[0];
+        writeInfo.dstSet = descriptorBundle.handles[0];
         writeInfo.dstBinding = binding;
     }
     for (uint32_t binding = 0; binding < SAMPLER_BINDING_COUNT; binding++) {
@@ -308,7 +305,7 @@ void VulkanPipelineCache::getOrCreateDescriptors(
             assert_invariant(mDummySamplerInfo.imageView);
 
         }
-        writeInfo.dstSet = descriptorBundle->handles[1];
+        writeInfo.dstSet = descriptorBundle.handles[1];
         writeInfo.dstBinding = binding;
     }
     for (uint32_t binding = 0; binding < TARGET_BINDING_COUNT; binding++) {
@@ -328,7 +325,7 @@ void VulkanPipelineCache::getOrCreateDescriptors(
             writeInfo = mDummyTargetWriteInfo;
             assert_invariant(mDummyTargetInfo.imageView);
         }
-        writeInfo.dstSet = descriptorBundle->handles[2];
+        writeInfo.dstSet = descriptorBundle.handles[2];
         writeInfo.dstBinding = binding;
     }
     vkUpdateDescriptorSets(mDevice, nwrites, writes, 0, nullptr);
@@ -401,24 +398,25 @@ VulkanPipelineCache::LayoutBundle* VulkanPipelineCache::getOrCreatePipelineLayou
 bool VulkanPipelineCache::getOrCreatePipeline(VkPipeline* pipeline) noexcept {
     LayoutBundle* layout = getOrCreatePipelineLayout();
     assert_invariant(layout);
-    PipelineVal*& currentPipeline = mCmdBufferState[mCmdBufferIndex].currentPipeline;
 
     // If no bindings have been dirtied, return false to indicate there's no need to re-bind.
     if (!mDirtyPipeline[mCmdBufferIndex]) {
-        assert_invariant(currentPipeline);
-        currentPipeline->age = 0;
-        *pipeline = currentPipeline->handle;
+        const PipelineKey& key = mCmdBufferState[mCmdBufferIndex].currentPipeline;
+        PipelineMap::iterator iter = mPipelines.find(key);
+        assert_invariant(iter != mPipelines.end());
+        iter.value().age = 0;
+        *pipeline = iter->second.handle;
         return false;
     }
     assert_invariant(mPipelineKey.shaders[0] && "Vertex shader is not bound.");
 
     // If a cached object exists, return true to indicate that the caller should call vmCmdBind.
-    auto iter = mPipelines.find(mPipelineKey);
+    PipelineMap::iterator iter = mPipelines.find(mPipelineKey);
     if (UTILS_LIKELY(iter != mPipelines.end())) {
-        currentPipeline = &iter.value();
-        currentPipeline->age = 0;
-        *pipeline = currentPipeline->handle;
+        iter.value().age = 0;
+        *pipeline = iter->second.handle;
         mDirtyPipeline.unset(mCmdBufferIndex);
+        mCmdBufferState[mCmdBufferIndex].currentPipeline = mPipelineKey;
         return true;
     }
 
@@ -570,11 +568,10 @@ bool VulkanPipelineCache::getOrCreatePipeline(VkPipeline* pipeline) noexcept {
     }
     ++layout->referenceCount;
 
-    // Stash a stable pointer to the stored cache entry to allow fast subsequent calls to
-    // getOrCreatePipeline when nothing has been dirtied.
-    const PipelineVal cacheEntry = { *pipeline, mLayoutKey, 0u };
-    currentPipeline = &mPipelines.emplace(std::make_pair(mPipelineKey, cacheEntry)).first.value();
+    const PipelineBundle cacheEntry = { *pipeline, mLayoutKey, 0u };
+    mPipelines.emplace(std::make_pair(mPipelineKey, cacheEntry));
     mDirtyPipeline.unset(mCmdBufferIndex);
+    mCmdBufferState[mCmdBufferIndex].currentPipeline = mPipelineKey;
 
     return true;
 }
@@ -771,7 +768,7 @@ void VulkanPipelineCache::destroyCache() noexcept {
     }
     mPipelines.clear();
     for (int i = 0; i < VK_MAX_COMMAND_BUFFERS; i++) {
-        mCmdBufferState[i].currentPipeline = nullptr;
+        mCmdBufferState[i].currentPipeline = {};
     }
     markDirtyPipeline();
     if (mDummySamplerInfo.sampler) {
@@ -914,7 +911,7 @@ void VulkanPipelineCache::destroyLayoutsAndDescriptors() noexcept {
     // Our current layout bundle strategy can cause the # of layout bundles to explode in certain
     // situations, so it's interesting to report the number that get stuffed into the cache.
     #ifndef NDEBUG
-    utils::slog.d << "Destroying " << mLayouts.size() << " bundles of layouts."
+    utils::slog.d << "Destroying " << mLayouts.size() << " pipeline layouts."
                   << utils::io::endl;
     #endif
 
@@ -930,7 +927,7 @@ void VulkanPipelineCache::destroyLayoutsAndDescriptors() noexcept {
     vkDestroyDescriptorPool(mDevice, mDescriptorPool, VKALLOC);
     mDescriptorPool = VK_NULL_HANDLE;
     for (int i = 0; i < VK_MAX_COMMAND_BUFFERS; i++) {
-        mCmdBufferState[i].currentDescriptorBundle = nullptr;
+        mCmdBufferState[i].currentDescriptors = {};
     }
 
     for (VkDescriptorPool pool : mExtinctDescriptorPools) {
