@@ -66,11 +66,6 @@ static getPipelineLayoutKey(const Program::SamplerGroupInfo& samplerGroupInfo) n
 }
 
 VulkanPipelineCache::VulkanPipelineCache() : mDefaultRasterState(createDefaultRasterState()) {
-    markDirtyDescriptor();
-    markDirtyPipeline();
-    mDescriptorKey = {};
-    mPipelineKey = {};
-
     mDummyBufferWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     mDummyBufferWriteInfo.pNext = nullptr;
     mDummyBufferWriteInfo.dstArrayElement = 0;
@@ -110,8 +105,10 @@ void VulkanPipelineCache::setDevice(VkDevice device, VmaAllocator allocator) {
     mAllocator = allocator;
     mDescriptorPool = createDescriptorPool(mDescriptorPoolSize);
 
-    // Next, create a small dummy UBO
-    // TODO: Now that we have dynamic layouts, do we still need to clear out unused descriptor sets?
+    // Formulate some dummy objects and dummy descriptor info used only for clearing out unused
+    // bindings. This is especially crucial after a texture has been destroyed. Since core Vulkan
+    // does not allow specifying VK_NULL_HANDLE without the robustness2 extension, we are forced to
+    // bind dummy objects.
 
     VkBufferCreateInfo bufferInfo {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -123,11 +120,6 @@ void VulkanPipelineCache::setDevice(VkDevice device, VmaAllocator allocator) {
 
     mDummyBufferInfo.buffer = mDummyBuffer;
     mDummyBufferInfo.range = bufferInfo.size;
-
-    // Formulate some dummy descriptor info used solely for clearing out unused bindings. This is
-    // especially crucial after a texture has been destroyed. Since core Vulkan does not allow
-    // specifying VK_NULL_HANDLE without the robustness2 extension, we are forced to use dummy
-    // resources for this.
     mDummySamplerInfo.imageLayout = mDummyTargetInfo.imageLayout;
 
     VkSamplerCreateInfo samplerInfo {
@@ -151,75 +143,71 @@ void VulkanPipelineCache::setDevice(VkDevice device, VmaAllocator allocator) {
 }
 
 bool VulkanPipelineCache::bindDescriptors(VkCommandBuffer cmdbuffer) noexcept {
-    bool bind = false;
-    DescriptorCacheEntry* cacheEntry = getOrCreateDescriptors(&bind);
+    DescriptorMap::iterator descriptorIter = mDescriptorSets.find(mDescriptorRequirements);
 
-    // Check if an overflow has occurred and allow a higher level to handle the error gracefully.
-    if (cacheEntry == nullptr) {
+    // Check if the required descriptors are already bound.
+    if (DescEqual equals; UTILS_LIKELY(equals(mBoundDescriptor, mDescriptorRequirements))) {
+        assert_invariant(descriptorIter != mDescriptorSets.end());
+        descriptorIter.value().last_used = mCurrentTime;
+        return true;
+    }
+
+    // If a cached object exists, re-use it, otherwise a create a new one.
+    DescriptorCacheEntry* cacheEntry = UTILS_LIKELY(descriptorIter != mDescriptorSets.end()) ?
+            &descriptorIter.value() : createDescriptorSets();
+
+    // If a descriptor set overflow occurred, allow higher levels to handle it gracefully.
+    if (UTILS_UNLIKELY(cacheEntry == nullptr)) {
         return false;
     }
 
-    // Update the timestamp for the cache entry to ensure that the descriptor set doesn't get
-    // evicted too soon.  Note that the timestamp for the pipeline and layouts is updated later
-    // during bindPipeline()
     cacheEntry->last_used = mCurrentTime;
+    mBoundDescriptor = mDescriptorRequirements;
 
-    // If the required descriptor set is different from the one that's already bound,
-    // then bind it and clear its dirty flag.
-    if (bind) {
-        mDirtyDescriptor.unset(mCmdBufferIndex);
-        vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                getOrCreatePipelineLayout()->handle, 0, VulkanPipelineCache::DESCRIPTOR_TYPE_COUNT,
-                cacheEntry->handles.data(), 0, nullptr);
-    }
+    vkCmdBindDescriptorSets(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            getOrCreatePipelineLayout()->handle, 0, VulkanPipelineCache::DESCRIPTOR_TYPE_COUNT,
+            cacheEntry->handles.data(), 0, nullptr);
 
     return true;
 }
 
 void VulkanPipelineCache::bindPipeline(VkCommandBuffer cmdbuffer) noexcept {
-    bool bind = false;
-    PipelineCacheEntry* cacheEntry = getOrCreatePipeline(&bind);
+    PipelineMap::iterator pipelineIter = mPipelines.find(mPipelineRequirements);
 
-    // Update the timestamp for both the pipeline and the layout.
+    // Check if the required pipeline is already bound.
+    if (PipelineEqual equals; UTILS_LIKELY(equals(mBoundPipeline, mPipelineRequirements))) {
+        assert_invariant(pipelineIter != mPipelines.end());
+        pipelineIter.value().last_used = mCurrentTime;
+        return;
+    }
+
+    // If a cached object exists, re-use it, otherwise a create a new one.
+    PipelineCacheEntry* cacheEntry = UTILS_LIKELY(pipelineIter != mPipelines.end()) ?
+            &pipelineIter.value() : createPipeline();
+
     cacheEntry->last_used = mCurrentTime;
     getOrCreatePipelineLayout()->last_used = mCurrentTime;
 
-    if (bind) {
-        mDirtyPipeline.unset(mCmdBufferIndex);
-        vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cacheEntry->handle);
-    }
+    mBoundPipeline = mPipelineRequirements;
+    mBoundLayout = mLayoutRequirements;
+
+    vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cacheEntry->handle);
 }
 
 void VulkanPipelineCache::bindScissor(VkCommandBuffer cmdbuffer, VkRect2D scissor) noexcept {
-    if (UTILS_UNLIKELY(!equivalent(mScissor, scissor))) {
-        mScissor = scissor;
+    if (UTILS_UNLIKELY(!equivalent(mCurrentScissor, scissor))) {
+        mCurrentScissor = scissor;
         vkCmdSetScissor(cmdbuffer, 0, 1, &scissor);
     }
 }
 
-VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescriptors(bool* bind) noexcept {
-    DescriptorMap::iterator descriptorIter = mDescriptorBundles.find(mDescriptorKey);
-
-    // Leave early if no bindings have been dirtied.
-    if (UTILS_LIKELY(!mDirtyDescriptor[mCmdBufferIndex])) {
-        assert_invariant(descriptorIter != mDescriptorBundles.end());
-        return &descriptorIter.value();
-    }
-
-    *bind = true;
-
-    // If a cached object exists, re-use it.
-    if (UTILS_LIKELY(descriptorIter != mDescriptorBundles.end())) {
-        return &descriptorIter.value();
-    }
-
-    // Create a new pipeline layout or fetch one from the cache.
+VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::createDescriptorSets() noexcept {
     PipelineLayoutCacheEntry* layoutCacheEntry = getOrCreatePipelineLayout();
 
-    DescriptorCacheEntry& descriptorCacheEntry = mDescriptorBundles.emplace(
-            std::make_pair(mDescriptorKey, DescriptorCacheEntry {})).first.value();
+    DescriptorCacheEntry& descriptorCacheEntry = mDescriptorSets.emplace(
+            std::make_pair(mDescriptorRequirements, DescriptorCacheEntry {})).first.value();
 
-    descriptorCacheEntry.pipelineLayout = mLayoutKey;
+    descriptorCacheEntry.pipelineLayout = mLayoutRequirements;
 
     // Each of the arenas for this particular layout are guaranteed to have the same size. Check
     // the first arena to see if any descriptor sets are available that can be re-claimed. If not,
@@ -227,7 +215,7 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescr
     // are no longer used. This occurs during the cleanup phase during command buffer submission.
     auto& descriptorSetArenas = layoutCacheEntry->descriptorSetArenas;
     if (descriptorSetArenas[0].empty()) {
-        if (mDescriptorBundles.size() >= mDescriptorPoolSize) {
+        if (mDescriptorSets.size() >= mDescriptorPoolSize) {
             growDescriptorPool();
         }
         VkDescriptorSetAllocateInfo allocInfo = {};
@@ -235,10 +223,10 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescr
         allocInfo.descriptorPool = mDescriptorPool;
         allocInfo.descriptorSetCount = DESCRIPTOR_TYPE_COUNT;
         allocInfo.pSetLayouts = layoutCacheEntry->descriptorSetLayouts.data();
-        VkResult err = vkAllocateDescriptorSets(mDevice, &allocInfo,
+        VkResult error = vkAllocateDescriptorSets(mDevice, &allocInfo,
                 descriptorCacheEntry.handles.data());
-        assert_invariant(err == VK_SUCCESS);
-        if (err != VK_SUCCESS) {
+        assert_invariant(error == VK_SUCCESS);
+        if (error != VK_SUCCESS) {
             return nullptr;
         }
     } else {
@@ -259,11 +247,11 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescr
     nwrites = 0;
     for (uint32_t binding = 0; binding < UBUFFER_BINDING_COUNT; binding++) {
         VkWriteDescriptorSet& writeInfo = writes[nwrites++];
-        if (mDescriptorKey.uniformBuffers[binding]) {
+        if (mDescriptorRequirements.uniformBuffers[binding]) {
             VkDescriptorBufferInfo& bufferInfo = descriptorBuffers[binding];
-            bufferInfo.buffer = mDescriptorKey.uniformBuffers[binding];
-            bufferInfo.offset = mDescriptorKey.uniformBufferOffsets[binding];
-            bufferInfo.range = mDescriptorKey.uniformBufferSizes[binding];
+            bufferInfo.buffer = mDescriptorRequirements.uniformBuffers[binding];
+            bufferInfo.offset = mDescriptorRequirements.uniformBufferOffsets[binding];
+            bufferInfo.range = mDescriptorRequirements.uniformBufferSizes[binding];
             writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeInfo.pNext = nullptr;
             writeInfo.dstArrayElement = 0;
@@ -282,9 +270,9 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescr
     }
     for (uint32_t binding = 0; binding < SAMPLER_BINDING_COUNT; binding++) {
         VkWriteDescriptorSet& writeInfo = writes[nwrites++];
-        if (mDescriptorKey.samplers[binding].sampler) {
+        if (mDescriptorRequirements.samplers[binding].sampler) {
             VkDescriptorImageInfo& imageInfo = descriptorSamplers[binding];
-            imageInfo = mDescriptorKey.samplers[binding];
+            imageInfo = mDescriptorRequirements.samplers[binding];
             writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeInfo.pNext = nullptr;
             writeInfo.dstArrayElement = 0;
@@ -304,9 +292,9 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescr
     }
     for (uint32_t binding = 0; binding < TARGET_BINDING_COUNT; binding++) {
         VkWriteDescriptorSet& writeInfo = writes[nwrites++];
-        if (mDescriptorKey.inputAttachments[binding].imageView) {
+        if (mDescriptorRequirements.inputAttachments[binding].imageView) {
             VkDescriptorImageInfo& imageInfo = descriptorInputAttachments[binding];
-            imageInfo = mDescriptorKey.inputAttachments[binding];
+            imageInfo = mDescriptorRequirements.inputAttachments[binding];
             writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeInfo.pNext = nullptr;
             writeInfo.dstArrayElement = 0;
@@ -326,23 +314,8 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::getOrCreateDescr
     return &descriptorCacheEntry;
 }
 
-VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipeline(bool* bind) noexcept {
-    PipelineMap::iterator iter = mPipelines.find(mPipelineKey);
-
-    // Return early if no bindings have been dirtied.
-    if (!mDirtyPipeline[mCmdBufferIndex]) {
-        assert_invariant(iter != mPipelines.end());
-        return &iter.value();
-    }
-
-    assert_invariant(mPipelineKey.shaders[0] && "Vertex shader is not bound.");
-
-    *bind = true;
-
-    // If a cached object exists, re-use it.
-    if (UTILS_LIKELY(iter != mPipelines.end())) {
-        return &iter.value();
-    }
+VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::createPipeline() noexcept {
+    assert_invariant(mPipelineRequirements.shaders[0] && "Vertex shader is not bound.");
 
     PipelineLayoutCacheEntry* layout = getOrCreatePipelineLayout();
     assert_invariant(layout);
@@ -366,18 +339,18 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipelin
     colorBlendState.pAttachments = colorBlendAttachments;
 
     // If we reach this point, we need to create and stash a brand new pipeline object.
-    shaderStages[0].module = mPipelineKey.shaders[0];
-    shaderStages[1].module = mPipelineKey.shaders[1];
+    shaderStages[0].module = mPipelineRequirements.shaders[0];
+    shaderStages[1].module = mPipelineRequirements.shaders[1];
 
     // We don't store array sizes to save space, but it's quick to count all non-zero
     // entries because these arrays have a small fixed-size capacity.
     uint32_t numVertexAttribs = 0;
     uint32_t numVertexBuffers = 0;
     for (uint32_t i = 0; i < VERTEX_ATTRIBUTE_COUNT; i++) {
-        if (mPipelineKey.vertexAttributes[i].format > 0) {
+        if (mPipelineRequirements.vertexAttributes[i].format > 0) {
             numVertexAttribs++;
         }
-        if (mPipelineKey.vertexBuffers[i].stride > 0) {
+        if (mPipelineRequirements.vertexBuffers[i].stride > 0) {
             numVertexBuffers++;
         }
     }
@@ -385,13 +358,13 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipelin
     VkPipelineVertexInputStateCreateInfo vertexInputState = {};
     vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputState.vertexBindingDescriptionCount = numVertexBuffers;
-    vertexInputState.pVertexBindingDescriptions = mPipelineKey.vertexBuffers;
+    vertexInputState.pVertexBindingDescriptions = mPipelineRequirements.vertexBuffers;
     vertexInputState.vertexAttributeDescriptionCount = numVertexAttribs;
-    vertexInputState.pVertexAttributeDescriptions = mPipelineKey.vertexAttributes;
+    vertexInputState.pVertexAttributeDescriptions = mPipelineRequirements.vertexAttributes;
 
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = {};
     inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssemblyState.topology = mPipelineKey.topology;
+    inputAssemblyState.topology = mPipelineRequirements.topology;
 
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -412,8 +385,8 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipelin
     VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineCreateInfo.layout = layout->handle;
-    pipelineCreateInfo.renderPass = mPipelineKey.renderPass;
-    pipelineCreateInfo.subpass = mPipelineKey.subpassIndex;
+    pipelineCreateInfo.renderPass = mPipelineRequirements.renderPass;
+    pipelineCreateInfo.subpass = mPipelineRequirements.subpassIndex;
     pipelineCreateInfo.stageCount = hasFragmentShader ? SHADER_MODULE_COUNT : 1;
     pipelineCreateInfo.pStages = shaderStages;
     pipelineCreateInfo.pVertexInputState = &vertexInputState;
@@ -440,7 +413,7 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipelin
     };
     pipelineCreateInfo.pDepthStencilState = &vkDs;
 
-    const auto& raster = mPipelineKey.rasterState;
+    const auto& raster = mPipelineRequirements.rasterState;
 
     vkRaster.depthClampEnable = raster.rasterization.depthClampEnable;
     vkRaster.rasterizerDiscardEnable = raster.rasterization.rasterizerDiscardEnable;
@@ -472,9 +445,9 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipelin
     pipelineCreateInfo.pDynamicState = &dynamicState;
 
     // Filament assumes consistent blend state across all color attachments.
-    colorBlendState.attachmentCount = mPipelineKey.rasterState.colorTargetCount;
+    colorBlendState.attachmentCount = mPipelineRequirements.rasterState.colorTargetCount;
     for (auto& target : colorBlendAttachments) {
-        target = mPipelineKey.rasterState.blending;
+        target = mPipelineRequirements.rasterState.blending;
     }
 
     // There are no color attachments if there is no bound fragment shader.  (e.g. shadow map gen)
@@ -484,30 +457,31 @@ VulkanPipelineCache::PipelineCacheEntry* VulkanPipelineCache::getOrCreatePipelin
     }
 
     PipelineCacheEntry& bundle = mPipelines.emplace(
-            std::make_pair(mPipelineKey, PipelineCacheEntry {})).first.value();
+            std::make_pair(mPipelineRequirements, PipelineCacheEntry {})).first.value();
 
     #if FILAMENT_VULKAN_VERBOSE
     utils::slog.d << "vkCreateGraphicsPipelines with shaders = ("
             << shaderStages[0].module << ", " << shaderStages[1].module << ")" << utils::io::endl;
     #endif
-    VkResult err = vkCreateGraphicsPipelines(mDevice, VK_NULL_HANDLE, 1, &pipelineCreateInfo,
+    VkResult error = vkCreateGraphicsPipelines(mDevice, VK_NULL_HANDLE, 1, &pipelineCreateInfo,
             VKALLOC, &bundle.handle);
-    if (err) {
-        utils::slog.e << "vkCreateGraphicsPipelines error " << err << utils::io::endl;
-        utils::debug_trap();
+    assert_invariant(error == VK_SUCCESS);
+    if (error != VK_SUCCESS) {
+        utils::slog.e << "vkCreateGraphicsPipelines error " << error << utils::io::endl;
+        return nullptr;
     }
 
     return &bundle;
 }
 
 VulkanPipelineCache::PipelineLayoutCacheEntry* VulkanPipelineCache::getOrCreatePipelineLayout() noexcept {
-    auto iter = mPipelineLayouts.find(mLayoutKey);
+    auto iter = mPipelineLayouts.find(mLayoutRequirements);
     if (UTILS_LIKELY(iter != mPipelineLayouts.end())) {
         return &iter.value();
     }
 
     PipelineLayoutCacheEntry& cacheEntry = mPipelineLayouts.emplace(
-            mLayoutKey, PipelineLayoutCacheEntry{}).first.value();
+            mLayoutRequirements, PipelineLayoutCacheEntry{}).first.value();
 
     VkDescriptorSetLayoutBinding binding = {};
     binding.descriptorCount = 1; // NOTE: We never use arrays-of-blocks.
@@ -530,7 +504,7 @@ VulkanPipelineCache::PipelineLayoutCacheEntry* VulkanPipelineCache::getOrCreateP
     VkDescriptorSetLayoutBinding sbindings[SAMPLER_BINDING_COUNT];
     binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     for (uint32_t i = 0; i < SAMPLER_BINDING_COUNT; i++) {
-        binding.stageFlags = getShaderStageFlags(mLayoutKey, i);
+        binding.stageFlags = getShaderStageFlags(mLayoutRequirements, i);
         binding.binding = i;
         sbindings[i] = binding;
     }
@@ -555,121 +529,42 @@ VulkanPipelineCache::PipelineLayoutCacheEntry* VulkanPipelineCache::getOrCreateP
     pPipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pPipelineLayoutCreateInfo.setLayoutCount = cacheEntry.descriptorSetLayouts.size();
     pPipelineLayoutCreateInfo.pSetLayouts = cacheEntry.descriptorSetLayouts.data();
-    VkResult err = vkCreatePipelineLayout(mDevice, &pPipelineLayoutCreateInfo, VKALLOC,
+    VkResult error = vkCreatePipelineLayout(mDevice, &pPipelineLayoutCreateInfo, VKALLOC,
             &cacheEntry.handle);
-    ASSERT_POSTCONDITION(!err, "Unable to create pipeline layout.");
-
-    return &cacheEntry;
+    assert_invariant(error == VK_SUCCESS);
+    return error == VK_SUCCESS ? &cacheEntry : nullptr;
 }
 
 void VulkanPipelineCache::bindProgram(const VulkanProgram& program) noexcept {
     const VkShaderModule shaders[2] = { program.bundle.vertex, program.bundle.fragment };
     for (uint32_t ssi = 0; ssi < SHADER_MODULE_COUNT; ssi++) {
-        if (mPipelineKey.shaders[ssi] != shaders[ssi]) {
-            markDirtyPipeline();
-            mPipelineKey.shaders[ssi] = shaders[ssi];
-        }
+        mPipelineRequirements.shaders[ssi] = shaders[ssi];
     }
-    PipelineLayoutKey key = getPipelineLayoutKey(program.samplerGroupInfo);
-    if (key != mLayoutKey) {
-        markDirtyPipeline();
-        markDirtyDescriptor();
-        mLayoutKey = key;
-    }
+    mLayoutRequirements = getPipelineLayoutKey(program.samplerGroupInfo);
 }
 
 void VulkanPipelineCache::bindRasterState(const RasterState& rasterState) noexcept {
-    auto& raster0 = mPipelineKey.rasterState.rasterization;
-    const auto& raster1 = rasterState.rasterization;
-    auto& blend0 = mPipelineKey.rasterState.blending;
-    const auto& blend1 = rasterState.blending;
-    auto& ds0 = mPipelineKey.rasterState.depthStencil;
-    const auto& ds1 = rasterState.depthStencil;
-    auto& ms0 = mPipelineKey.rasterState.multisampling;
-    const auto& ms1 = rasterState.multisampling;
-    if (UTILS_UNLIKELY(
-        raster0.depthClampEnable != raster1.depthClampEnable ||
-        raster0.rasterizerDiscardEnable != raster1.rasterizerDiscardEnable ||
-        raster0.polygonMode != raster1.polygonMode ||
-        raster0.cullMode != raster1.cullMode ||
-        raster0.frontFace != raster1.frontFace ||
-        raster0.depthBiasEnable != raster1.depthBiasEnable ||
-        raster0.depthBiasConstantFactor != raster1.depthBiasConstantFactor ||
-        raster0.depthBiasClamp != raster1.depthBiasClamp ||
-        raster0.depthBiasSlopeFactor != raster1.depthBiasSlopeFactor ||
-        raster0.lineWidth != raster1.lineWidth ||
-
-        blend0.blendEnable != blend1.blendEnable ||
-        blend0.srcColorBlendFactor != blend1.srcColorBlendFactor ||
-        blend0.dstColorBlendFactor != blend1.dstColorBlendFactor ||
-        blend0.colorBlendOp != blend1.colorBlendOp ||
-        blend0.srcAlphaBlendFactor != blend1.srcAlphaBlendFactor ||
-        blend0.dstAlphaBlendFactor != blend1.dstAlphaBlendFactor ||
-        blend0.alphaBlendOp != blend1.alphaBlendOp ||
-        blend0.colorWriteMask != blend1.colorWriteMask ||
-
-        ds0.depthTestEnable != ds1.depthTestEnable ||
-        ds0.depthWriteEnable != ds1.depthWriteEnable ||
-        ds0.depthCompareOp != ds1.depthCompareOp ||
-        ds0.depthBoundsTestEnable != ds1.depthBoundsTestEnable ||
-        ds0.stencilTestEnable != ds1.stencilTestEnable ||
-        ds0.minDepthBounds != ds1.minDepthBounds ||
-        ds0.maxDepthBounds != ds1.maxDepthBounds ||
-
-        ms0.rasterizationSamples != ms1.rasterizationSamples ||
-        ms0.sampleShadingEnable != ms1.sampleShadingEnable ||
-        ms0.minSampleShading != ms1.minSampleShading ||
-        ms0.alphaToCoverageEnable != ms1.alphaToCoverageEnable ||
-        ms0.alphaToOneEnable != ms1.alphaToOneEnable ||
-
-        mPipelineKey.rasterState.colorTargetCount != rasterState.colorTargetCount
-    )) {
-        markDirtyPipeline();
-        mPipelineKey.rasterState = rasterState;
-    }
+    mPipelineRequirements.rasterState = rasterState;
 }
 
 void VulkanPipelineCache::bindRenderPass(VkRenderPass renderPass, int subpassIndex) noexcept {
-    if (mPipelineKey.renderPass != renderPass || mPipelineKey.subpassIndex != subpassIndex) {
-        markDirtyPipeline();
-        mPipelineKey.renderPass = renderPass;
-        mPipelineKey.subpassIndex = subpassIndex;
-    }
+    mPipelineRequirements.renderPass = renderPass;
+    mPipelineRequirements.subpassIndex = subpassIndex;
 }
 
 void VulkanPipelineCache::bindPrimitiveTopology(VkPrimitiveTopology topology) noexcept {
-    if (mPipelineKey.topology != topology) {
-        markDirtyPipeline();
-        mPipelineKey.topology = topology;
-    }
+    mPipelineRequirements.topology = topology;
 }
 
 void VulkanPipelineCache::bindVertexArray(const VertexArray& varray) noexcept {
     for (size_t i = 0; i < VERTEX_ATTRIBUTE_COUNT; i++) {
-        VkVertexInputAttributeDescription& attrib0 = mPipelineKey.vertexAttributes[i];
-        const VkVertexInputAttributeDescription& attrib1 = varray.attributes[i];
-        if (attrib1.location != attrib0.location || attrib1.binding != attrib0.binding ||
-                attrib1.format != attrib0.format || attrib1.offset != attrib0.offset) {
-            attrib0.format = attrib1.format;
-            attrib0.binding = attrib1.binding;
-            attrib0.location = attrib1.location;
-            attrib0.offset = attrib1.offset;
-            markDirtyPipeline();
-        }
-        VkVertexInputBindingDescription& buffer0 = mPipelineKey.vertexBuffers[i];
-        const VkVertexInputBindingDescription& buffer1 = varray.buffers[i];
-        if (buffer0.binding != buffer1.binding || buffer0.stride != buffer1.stride) {
-            buffer0.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-            buffer0.binding = buffer1.binding;
-            buffer0.stride = buffer1.stride;
-            markDirtyPipeline();
-        }
+        mPipelineRequirements.vertexAttributes[i] = varray.attributes[i];
+        mPipelineRequirements.vertexBuffers[i] = varray.buffers[i];
     }
 }
 
-VulkanPipelineCache::UniformBufferBinding VulkanPipelineCache::getUniformBufferBinding(
-            uint32_t bindingIndex) const noexcept {
-    auto& key = mDescriptorKey;
+VulkanPipelineCache::UniformBufferBinding VulkanPipelineCache::getUniformBufferBinding(uint32_t bindingIndex) const noexcept {
+    auto& key = mDescriptorRequirements;
     return {
         key.uniformBuffers[bindingIndex],
         key.uniformBufferOffsets[bindingIndex],
@@ -678,28 +573,25 @@ VulkanPipelineCache::UniformBufferBinding VulkanPipelineCache::getUniformBufferB
 }
 
 void VulkanPipelineCache::unbindUniformBuffer(VkBuffer uniformBuffer) noexcept {
-    auto& key = mDescriptorKey;
+    auto& key = mDescriptorRequirements;
     for (uint32_t bindingIndex = 0u; bindingIndex < UBUFFER_BINDING_COUNT; ++bindingIndex) {
         if (key.uniformBuffers[bindingIndex] == uniformBuffer) {
             key.uniformBuffers[bindingIndex] = {};
             key.uniformBufferSizes[bindingIndex] = {};
             key.uniformBufferOffsets[bindingIndex] = {};
-            markDirtyDescriptor();
         }
     }
 }
 
 void VulkanPipelineCache::unbindImageView(VkImageView imageView) noexcept {
-    for (auto& sampler : mDescriptorKey.samplers) {
+    for (auto& sampler : mDescriptorRequirements.samplers) {
         if (sampler.imageView == imageView) {
             sampler = {};
-            markDirtyDescriptor();
         }
     }
-    for (auto& target : mDescriptorKey.inputAttachments) {
+    for (auto& target : mDescriptorRequirements.inputAttachments) {
         if (target.imageView == imageView) {
             target = {};
-            markDirtyDescriptor();
         }
     }
 }
@@ -709,27 +601,15 @@ void VulkanPipelineCache::bindUniformBuffer(uint32_t bindingIndex, VkBuffer unif
     ASSERT_POSTCONDITION(bindingIndex < UBUFFER_BINDING_COUNT,
             "Uniform bindings overflow: index = %d, capacity = %d.",
             bindingIndex, UBUFFER_BINDING_COUNT);
-    auto& key = mDescriptorKey;
-    if (key.uniformBuffers[bindingIndex] != uniformBuffer ||
-        key.uniformBufferOffsets[bindingIndex] != offset ||
-        key.uniformBufferSizes[bindingIndex] != size) {
-        key.uniformBuffers[bindingIndex] = uniformBuffer;
-        key.uniformBufferOffsets[bindingIndex] = offset;
-        key.uniformBufferSizes[bindingIndex] = size;
-        markDirtyDescriptor();
-    }
+    auto& key = mDescriptorRequirements;
+    key.uniformBuffers[bindingIndex] = uniformBuffer;
+    key.uniformBufferOffsets[bindingIndex] = offset;
+    key.uniformBufferSizes[bindingIndex] = size;
 }
 
 void VulkanPipelineCache::bindSamplers(VkDescriptorImageInfo samplers[SAMPLER_BINDING_COUNT]) noexcept {
     for (uint32_t bindingIndex = 0; bindingIndex < SAMPLER_BINDING_COUNT; bindingIndex++) {
-        const VkDescriptorImageInfo& requested = samplers[bindingIndex];
-        VkDescriptorImageInfo& existing = mDescriptorKey.samplers[bindingIndex];
-        if (existing.sampler != requested.sampler ||
-            existing.imageView != requested.imageView ||
-            existing.imageLayout != requested.imageLayout) {
-            existing = requested;
-            markDirtyDescriptor();
-        }
+        mDescriptorRequirements.samplers[bindingIndex] = samplers[bindingIndex];
     }
 }
 
@@ -738,12 +618,7 @@ void VulkanPipelineCache::bindInputAttachment(uint32_t bindingIndex,
     ASSERT_POSTCONDITION(bindingIndex < TARGET_BINDING_COUNT,
             "Input attachment bindings overflow: index = %d, capacity = %d.",
             bindingIndex, TARGET_BINDING_COUNT);
-    VkDescriptorImageInfo& imageInfo = mDescriptorKey.inputAttachments[bindingIndex];
-    if (imageInfo.imageView != targetInfo.imageView ||
-            imageInfo.imageLayout != targetInfo.imageLayout) {
-        imageInfo = targetInfo;
-        markDirtyDescriptor();
-    }
+    mDescriptorRequirements.inputAttachments[bindingIndex] = targetInfo;
 }
 
 void VulkanPipelineCache::destroyCache() noexcept {
@@ -753,7 +628,7 @@ void VulkanPipelineCache::destroyCache() noexcept {
         vkDestroyPipeline(mDevice, iter.second.handle, VKALLOC);
     }
     mPipelines.clear();
-    markDirtyPipeline();
+    mPipelineRequirements = {};
     if (mDummySamplerInfo.sampler) {
         vkDestroySampler(mDevice, mDummySamplerInfo.sampler, VKALLOC);
         mDummySamplerInfo.sampler = VK_NULL_HANDLE;
@@ -770,25 +645,26 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
 
     ++mCurrentTime;
 
-    // Mark everything as dirty, as per the Vulkan spec, which says: "When a command buffer begins
-    // recording, all state in that command buffer is undefined."
-    mDirtyPipeline.set(mCmdBufferIndex);
-    mDirtyDescriptor.set(mCmdBufferIndex);
-    mScissor = {};
+    // The Vulkan spec, says: "When a command buffer begins recording, all state in that command
+    // buffer is undefined." Therefore we need to clear out our curring bindings at this time.
+    mBoundPipeline = {};
+    mBoundLayout = {};
+    mBoundDescriptor = {};
+    mCurrentScissor = {};
 
     // NOTE: Due to robin_map restrictions, we cannot use auto or range-based loops.
 
     // Check if any bundles in the cache are no longer in use by any command buffer. Descriptors
     // from unused bundles are moved back to their respective arenas.
-    using ConstDescIterator = decltype(mDescriptorBundles)::const_iterator;
-    for (ConstDescIterator iter = mDescriptorBundles.begin(); iter != mDescriptorBundles.end();) {
+    using ConstDescIterator = decltype(mDescriptorSets)::const_iterator;
+    for (ConstDescIterator iter = mDescriptorSets.begin(); iter != mDescriptorSets.end();) {
         const DescriptorCacheEntry& cacheEntry = iter.value();
         if (cacheEntry.last_used + VK_MAX_PIPELINE_AGE < mCurrentTime) {
-            auto& descriptorSetArenas = mPipelineLayouts[cacheEntry.pipelineLayout].descriptorSetArenas;
+            auto& arenas = mPipelineLayouts[cacheEntry.pipelineLayout].descriptorSetArenas;
             for (uint32_t i = 0; i < DESCRIPTOR_TYPE_COUNT; ++i) {
-                descriptorSetArenas[i].push_back(cacheEntry.handles[i]);
+                arenas[i].push_back(cacheEntry.handles[i]);
             }
-            iter = mDescriptorBundles.erase(iter);
+            iter = mDescriptorSets.erase(iter);
         } else {
             ++iter;
         }
@@ -814,12 +690,10 @@ void VulkanPipelineCache::onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) 
         if (cacheEntry.last_used + VK_MAX_PIPELINE_AGE < mCurrentTime) {
             vkDestroyPipelineLayout(mDevice, iter->second.handle, VKALLOC);
             for (auto setLayout : iter->second.descriptorSetLayouts) {
-#if 1
+#ifndef NDEBUG
                 PipelineLayoutKey key = iter.key();
-                for (auto& pair : mDescriptorBundles) {
-                    if (pair.second.pipelineLayout == key) {
-                        printf("Bad condition detected.  DS layout %p is still in use\n", setLayout);
-                    }
+                for (auto& pair : mDescriptorSets) {
+                    assert_invariant(pair.second.pipelineLayout != key);
                 }
 #endif
                 vkDestroyDescriptorSetLayout(mDevice, setLayout, VKALLOC);
@@ -879,11 +753,11 @@ void VulkanPipelineCache::destroyLayoutsAndDescriptors() noexcept {
     // Our current descriptor set strategy can cause the # of descriptor sets to explode in certain
     // situations, so it's interesting to report the number that get stuffed into the cache.
     #ifndef NDEBUG
-    utils::slog.d << "Destroying " << mDescriptorBundles.size() << " bundles of descriptor sets."
+    utils::slog.d << "Destroying " << mDescriptorSets.size() << " bundles of descriptor sets."
             << utils::io::endl;
     #endif
 
-    mDescriptorBundles.clear();
+    mDescriptorSets.clear();
 
     // Our current layout bundle strategy can cause the # of layout bundles to explode in certain
     // situations, so it's interesting to report the number that get stuffed into the cache.
@@ -910,7 +784,7 @@ void VulkanPipelineCache::destroyLayoutsAndDescriptors() noexcept {
     mExtinctDescriptorPools.clear();
     mExtinctDescriptorBundles.clear();
 
-    markDirtyDescriptor();
+    mBoundDescriptor = {};
 }
 
 void VulkanPipelineCache::growDescriptorPool() noexcept {
@@ -932,11 +806,11 @@ void VulkanPipelineCache::growDescriptorPool() noexcept {
 
     // Move all in-use descriptors from the primary cache into an "extinct" list, so that they will
     // later be destroyed rather than reclaimed.
-    using DescIterator = decltype(mDescriptorBundles)::iterator;
-    for (DescIterator iter = mDescriptorBundles.begin(); iter != mDescriptorBundles.end(); ++iter) {
+    using DescIterator = decltype(mDescriptorSets)::iterator;
+    for (DescIterator iter = mDescriptorSets.begin(); iter != mDescriptorSets.end(); ++iter) {
         mExtinctDescriptorBundles.push_back(iter.value());
     }
-    mDescriptorBundles.clear();
+    mDescriptorSets.clear();
 }
 
 size_t VulkanPipelineCache::PipelineLayoutKeyHashFn::operator()(const PipelineLayoutKey& key) const {

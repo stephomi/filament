@@ -307,8 +307,8 @@ private:
         std::array<std::vector<VkDescriptorSet>, DESCRIPTOR_TYPE_COUNT> descriptorSetArenas;
     };
 
-    // PRIVATE CACHE CONTAINERS
-    // ------------------------
+    // CACHE CONTAINERS
+    // ----------------
 
     using PipelineLayoutMap = tsl::robin_map<PipelineLayoutKey , PipelineLayoutCacheEntry,
             PipelineLayoutKeyHashFn, PipelineLayoutKeyEqual>;
@@ -319,46 +319,35 @@ private:
 
     PipelineLayoutMap mPipelineLayouts;
     PipelineMap mPipelines;
-    DescriptorMap mDescriptorBundles;
+    DescriptorMap mDescriptorSets;
 
-    // INTERNAL "GET OR CREATE" HELPERS
-    // --------------------------------
-
-    // If bind is set to true, vkCmdBindDescriptorSets is required.
-    // Returns a transient pointer that should be not stored, or null if an overflow occurred.
-    DescriptorCacheEntry* getOrCreateDescriptors(bool* bind) noexcept;
-
-    // If bind is set to true, vkCmdBindPipeline is required.
-    // Returns a transient pointer that should be not stored.
-    PipelineCacheEntry* getOrCreatePipeline(bool* bind) noexcept;
-
-    // Returns a transient pointer that should be not stored.
+    // These helpers all return unstable pointers that should not be stored.
+    DescriptorCacheEntry* createDescriptorSets() noexcept;
+    PipelineCacheEntry* createPipeline() noexcept;
     PipelineLayoutCacheEntry* getOrCreatePipelineLayout() noexcept;
 
-    // MISC HELPERS
-    // ------------
-
+    // Misc helper methods.
     void destroyLayoutsAndDescriptors() noexcept;
-    void markDirtyPipeline() noexcept { mDirtyPipeline.setValue(ALL_COMMAND_BUFFERS); }
-    void markDirtyDescriptor() noexcept { mDirtyDescriptor.setValue(ALL_COMMAND_BUFFERS); }
     VkDescriptorPool createDescriptorPool(uint32_t size) const;
     void growDescriptorPool() noexcept;
 
+    // Immutable state.
     VkDevice mDevice = VK_NULL_HANDLE;
     VmaAllocator mAllocator = VK_NULL_HANDLE;
     const RasterState mDefaultRasterState;
 
-    // State tracking for the current command buffer.
-    PipelineLayoutKey mLayoutKey;
-    PipelineKey mPipelineKey;
-    DescriptorKey mDescriptorKey;
-    VkRect2D mScissor = {};
+    // Current requirements for the pipeline layout, pipeline, and descriptor sets.
+    PipelineLayoutKey mLayoutRequirements = {};
+    PipelineKey mPipelineRequirements = {};
+    DescriptorKey mDescriptorRequirements = {};
 
-    // One dirty bit per command buffer, stored in a bitset to permit fast "set all dirty bits". If
-    // a dirty flag is set for the current command buffer, then a new pipeline or descriptor set
-    // needs to be retrieved from the cache or created.
-    utils::bitset32 mDirtyPipeline;
-    utils::bitset32 mDirtyDescriptor;
+    // Current bindings for the pipeline layout, pipeline, and descriptor sets.
+    PipelineLayoutKey mBoundLayout = {};
+    PipelineKey mBoundPipeline = {};
+    DescriptorKey mBoundDescriptor = {};
+
+    // Current state for scissoring.
+    VkRect2D mCurrentScissor = {};
 
     uint32_t mCmdBufferIndex = 0;
     Timestamp mCurrentTime = 0;
