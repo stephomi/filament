@@ -15,6 +15,7 @@
  */
 
 #include "VulkanSwapChain.h"
+#include "VulkanTexture.h"
 
 #include <utils/FixedCapacityVector.h>
 #include <utils/Panic.h>
@@ -65,65 +66,7 @@ bool VulkanSwapChain::acquire() {
     return true;
 }
 
-static void createFinalDepthBuffer(VulkanContext& context, VulkanSwapChain& surfaceContext,
-        VkFormat depthFormat, VkExtent2D size) {
-    // Create an appropriately-sized device-only VkImage.
-    VkImage depthImage;
-    VkImageCreateInfo imageInfo {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = depthFormat,
-        .extent = { size.width, size.height, 1 },
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-    };
-    VkResult error = bluevk::vkCreateImage(context.device, &imageInfo, VKALLOC, &depthImage);
-    assert_invariant(!error && "Unable to create depth image.");
-
-    // Allocate memory for the VkImage and bind it.
-    VkMemoryRequirements memReqs;
-    bluevk::vkGetImageMemoryRequirements(context.device, depthImage, &memReqs);
-    VkMemoryAllocateInfo allocInfo {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = memReqs.size,
-        .memoryTypeIndex = context.selectMemoryType(memReqs.memoryTypeBits,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-    };
-    error = bluevk::vkAllocateMemory(context.device, &allocInfo, nullptr,
-            &surfaceContext.depth.memory);
-    assert_invariant(!error && "Unable to allocate depth memory.");
-    error = bluevk::vkBindImageMemory(context.device, depthImage, surfaceContext.depth.memory, 0);
-    assert_invariant(!error && "Unable to bind depth memory.");
-
-    // Create a VkImageView so that we can attach depth to the framebuffer.
-    VkImageView depthView;
-    VkImageViewCreateInfo viewInfo {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = depthImage,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = depthFormat,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
-    };
-    error = bluevk::vkCreateImageView(context.device, &viewInfo, VKALLOC, &depthView);
-    assert_invariant(!error && "Unable to create depth view.");
-
-    // Unlike the color attachments (which are double-buffered or triple-buffered), we only need one
-    // depth attachment in the entire chain.
-    surfaceContext.depth.view = depthView;
-    surfaceContext.depth.image = depthImage;
-    surfaceContext.depth.format = depthFormat;
-    surfaceContext.depth.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    printf("prideout SC depth is %p\n", depthImage);
-}
-
-void VulkanSwapChain::create() {
+void VulkanSwapChain::create(VulkanStagePool& stagePool) {
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.physicalDevice, surface, &caps);
 
@@ -210,17 +153,8 @@ void VulkanSwapChain::create() {
     result = vkGetSwapchainImagesKHR(context.device, swapchain, &imageCount, images.data());
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkGetSwapchainImagesKHR error.");
     for (size_t i = 0; i < images.size(); ++i) {
-        color[i] = {
-            .format = surfaceFormat.format,
-            .image = images[i],
-            .view = {},
-            .memory = {},
-            .texture = {},
-
-            // Swap chain images initially have UNDEFINED layout.
-            // We transition their layout to GENERAL right after calling vkAcquireNextImageKHR.
-            .layout = VK_IMAGE_LAYOUT_UNDEFINED,
-        };
+        color[i].reset(new VulkanTexture(context, images[i], surfaceFormat.format, 1, clientSize.width,
+                clientSize.height, TextureUsage::COLOR_ATTACHMENT, stagePool));
     }
     slog.i
             << "vkCreateSwapchain"
@@ -231,48 +165,27 @@ void VulkanSwapChain::create() {
             << ", " << caps.currentTransform
             << io::endl;
 
-    // Create image views.
-    VkImageViewCreateInfo ivCreateInfo = {};
-    ivCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    ivCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    ivCreateInfo.format = surfaceFormat.format;
-    ivCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    ivCreateInfo.subresourceRange.levelCount = 1;
-    ivCreateInfo.subresourceRange.layerCount = 1;
-    for (size_t i = 0; i < images.size(); ++i) {
-        ivCreateInfo.image = images[i];
-        result = bluevk::vkCreateImageView(context.device, &ivCreateInfo, VKALLOC,
-                &color[i].view);
-        ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkCreateImageView error.");
-    }
-
     createSemaphore(context.device, &imageAvailable);
     acquired = false;
 
-    createFinalDepthBuffer(context, *this, context.finalDepthFormat, clientSize);
+    // HACK: force usage of the "fallback" depth format, since we know that's a safe depth format.
+    auto depthFormat = TextureFormat::DEPTH24;
+
+    depth.reset(new VulkanTexture(context, SamplerType::SAMPLER_2D, 1,
+            depthFormat, 1, clientSize.width, clientSize.height, 1, TextureUsage::DEPTH_ATTACHMENT,
+            stagePool));
 }
 
 void VulkanSwapChain::destroy() {
     context.commands->flush();
     context.commands->wait();
     const VkDevice device = context.device;
-    for (VulkanAttachment& swapContext : color) {
-
-        // If this is headless, then we own the image and need to explicitly destroy it.
-        if (!swapchain) {
-            vkDestroyImage(device, swapContext.image, VKALLOC);
-            vkFreeMemory(device, swapContext.memory, VKALLOC);
-        }
-
-        vkDestroyImageView(device, swapContext.view, VKALLOC);
-        swapContext.view = VK_NULL_HANDLE;
+    depth.reset();
+    for (auto& texture : color) {
+        texture.reset();
     }
     vkDestroySwapchainKHR(device, swapchain, VKALLOC);
     vkDestroySemaphore(device, imageAvailable, VKALLOC);
-
-    vkDestroyImageView(device, depth.view, VKALLOC);
-    vkDestroyImage(device, depth.image, VKALLOC);
-    vkFreeMemory(device, depth.memory, VKALLOC);
 }
 
 // Near the end of the frame, we transition the swap chain to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR using
@@ -283,16 +196,16 @@ void VulkanSwapChain::makePresentable() {
     if (headlessQueue) {
         return;
     }
-    VulkanAttachment& swapContext = color[currentSwapIndex];
+    VulkanTexture& texture = *color[currentSwapIndex];
     VkImageMemoryBarrier barrier {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = 0,
-        .oldLayout = swapContext.layout,
+        .oldLayout = texture.getVkLayout(0, 0),
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = swapContext.image,
+        .image = texture.getVkImage(),
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .levelCount = 1,
@@ -302,7 +215,8 @@ void VulkanSwapChain::makePresentable() {
     vkCmdPipelineBarrier(context.commands->get().cmdbuffer,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    swapContext.layout = barrier.newLayout;
+
+    texture.trackLayout(0, 0, barrier.newLayout);
 }
 
 static void getHeadlessQueue(VulkanContext& context, VulkanSwapChain& sc) {
@@ -363,17 +277,17 @@ static void getPresentationQueue(VulkanContext& context, VulkanSwapChain& sc) {
 }
 
 // Primary SwapChain constructor. (not headless)
-VulkanSwapChain::VulkanSwapChain(VulkanContext& context, VkSurfaceKHR vksurface) :
+VulkanSwapChain::VulkanSwapChain(VulkanContext& context, VulkanStagePool& stagePool, VkSurfaceKHR vksurface) :
         context(context) {
     suboptimal = false;
     surface = vksurface;
     firstRenderPass = true;
     getPresentationQueue(context, *this);
-    create();
+    create(stagePool);
 }
 
 // Headless SwapChain constructor. (does not create a VkSwapChainKHR)
-VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_t height) :
+VulkanSwapChain::VulkanSwapChain(VulkanContext& context, VulkanStagePool& stagePool, uint32_t width, uint32_t height) :
         context(context) {
     surface = VK_NULL_HANDLE;
     getHeadlessQueue(context, *this);
@@ -386,57 +300,8 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
     color.resize(2);
 
     for (size_t i = 0; i < color.size(); ++i) {
-        VkImage image;
-        VkImageCreateInfo iCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = surfaceFormat.format,
-            .extent = {
-                .width = width,
-                .height = height,
-                .depth = 1,
-            },
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | // Allows use as a blit destination.
-                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,  // Allows use as a blit source (for readPixels)
-        };
-        assert_invariant(iCreateInfo.extent.width > 0);
-        assert_invariant(iCreateInfo.extent.height > 0);
-        vkCreateImage(context.device, &iCreateInfo, VKALLOC, &image);
-
-        VkMemoryRequirements memReqs = {};
-        vkGetImageMemoryRequirements(context.device, image, &memReqs);
-        VkMemoryAllocateInfo allocInfo = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = memReqs.size,
-            .memoryTypeIndex = context.selectMemoryType(memReqs.memoryTypeBits,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-        };
-        VkDeviceMemory imageMemory;
-        vkAllocateMemory(context.device, &allocInfo, VKALLOC, &imageMemory);
-        vkBindImageMemory(context.device, image, imageMemory, 0);
-
-        color[i] = {
-            .format = surfaceFormat.format, .image = image,
-            .view = {}, .memory = imageMemory, .texture = {}, .layout = VK_IMAGE_LAYOUT_UNDEFINED
-        };
-        VkImageViewCreateInfo ivCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = surfaceFormat.format,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .levelCount = 1,
-                .layerCount = 1,
-            }
-        };
-        vkCreateImageView(context.device, &ivCreateInfo, VKALLOC,
-                    &color[i].view);
+        color[i].reset(new VulkanTexture(context, SamplerType::SAMPLER_2D, 1, TextureFormat::RGBA8,
+                1, width, height, 1, TextureUsage::COLOR_ATTACHMENT, stagePool));
     }
 
     clientSize.width = width;
@@ -444,7 +309,12 @@ VulkanSwapChain::VulkanSwapChain(VulkanContext& context, uint32_t width, uint32_
 
     imageAvailable = VK_NULL_HANDLE;
 
-    createFinalDepthBuffer(context, *this, context.finalDepthFormat, clientSize);
+    // HACK: force usage of the "fallback" depth format, since we know that's a safe depth format.
+    auto depthFormat = TextureFormat::DEPTH24;
+
+    depth.reset(new VulkanTexture(context, SamplerType::SAMPLER_2D, 1,
+            depthFormat, 1, clientSize.width, clientSize.height, 1, TextureUsage::DEPTH_ATTACHMENT,
+            stagePool));
 }
 
 bool VulkanSwapChain::hasResized() const {
@@ -454,6 +324,38 @@ bool VulkanSwapChain::hasResized() const {
     VkSurfaceCapabilitiesKHR surfaceCapabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.physicalDevice, surface, &surfaceCapabilities);
     return !equivalent(clientSize, surfaceCapabilities.currentExtent);
+}
+
+VulkanAttachment VulkanSwapChain::getColor() const {
+    VulkanTexture& tex = getColorTexture();
+    return VulkanAttachment {
+        .format = tex.getVkFormat(),
+        .image = tex.getVkImage(),
+        .view = tex.getAttachmentView(0, 0, VK_IMAGE_ASPECT_COLOR_BIT),
+        .memory = VK_NULL_HANDLE,
+        .texture = &tex,
+        .layout = tex.getVkLayout(0, 0),
+        .level = 0,
+        .layer = 0,
+    };
+}
+
+VulkanAttachment VulkanSwapChain::getDepth() const {
+    VulkanTexture& tex = *this->depth.get();
+    return VulkanAttachment {
+        .format = tex.getVkFormat(),
+        .image = tex.getVkImage(),
+        .view = tex.getAttachmentView(0, 0, VK_IMAGE_ASPECT_DEPTH_BIT),
+        .memory = VK_NULL_HANDLE,
+        .texture = &tex,
+        .layout = tex.getVkLayout(0, 0),
+        .level = 0,
+        .layer = 0,
+    };
+}
+
+VulkanTexture& VulkanSwapChain::getColorTexture() const {
+    return *this->color[this->currentSwapIndex];
 }
 
 } // namespace filament

@@ -29,6 +29,18 @@ using namespace bluevk;
 namespace filament {
 namespace backend {
 
+VulkanTexture::VulkanTexture(VulkanContext& context, VkImage image, VkFormat format, uint8_t samples,
+        uint32_t width, uint32_t height, TextureUsage tusage, VulkanStagePool& stagePool) :
+        HwTexture(SamplerType::SAMPLER_2D, 1, samples, width, height, 1, TextureFormat::UNUSED, tusage),
+        mVkFormat(format),
+        mAspect(any(usage & TextureUsage::DEPTH_ATTACHMENT) ? VK_IMAGE_ASPECT_DEPTH_BIT :
+            VK_IMAGE_ASPECT_COLOR_BIT),
+        mViewType(getImageViewType(target)),
+        mSwizzle({}),
+        mTextureImage(image),
+        mContext(context),
+        mStagePool(stagePool) {}
+
 VulkanTexture::VulkanTexture(VulkanContext& context, SamplerType target, uint8_t levels,
         TextureFormat tformat, uint8_t samples, uint32_t w, uint32_t h, uint32_t depth,
         TextureUsage tusage, VulkanStagePool& stagePool, VkComponentMapping swizzle) :
@@ -177,8 +189,10 @@ VulkanTexture::VulkanTexture(VulkanContext& context, SamplerType target, uint8_t
 
 VulkanTexture::~VulkanTexture() {
     delete mSidecarMSAA;
-    vkDestroyImage(mContext.device, mTextureImage, VKALLOC);
-    vkFreeMemory(mContext.device, mTextureImageMemory, VKALLOC);
+    if (mTextureImageMemory != VK_NULL_HANDLE) {
+        vkDestroyImage(mContext.device, mTextureImage, VKALLOC);
+        vkFreeMemory(mContext.device, mTextureImageMemory, VKALLOC);
+    }
     for (auto entry : mCachedImageViews) {
         vkDestroyImageView(mContext.device, entry.second, VKALLOC);
     }
@@ -346,7 +360,6 @@ void VulkanTexture::setPrimaryRange(uint32_t minMiplevel, uint32_t maxMiplevel) 
 
 bool VulkanTexture::validatePrimaryImageView() const {
     const auto& sr = mPrimaryViewRange;
-    bool failed = false;
     for (uint32_t layer = 0; layer < sr.layerCount; ++layer) {
         for (uint32_t level = 0; level < sr.levelCount; ++level) {
             VkImageLayout layout = getVkLayout(layer + sr.baseArrayLayer, level + sr.baseMipLevel);

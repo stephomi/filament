@@ -27,9 +27,17 @@ namespace filament {
 namespace backend {
 
 struct VulkanTexture : public HwTexture {
+
+    // Standard constructor for user-facing textures.
     VulkanTexture(VulkanContext& context, SamplerType target, uint8_t levels,
             TextureFormat format, uint8_t samples, uint32_t w, uint32_t h, uint32_t depth,
             TextureUsage usage, VulkanStagePool& stagePool, VkComponentMapping swizzle = {});
+
+    // Specialized constructor for internally created textures (e.g. from a swap chain)
+    // The texture will never destroy the given VkImage, but it does manages its subresources.
+    VulkanTexture(VulkanContext& context, VkImage image, VkFormat format, uint8_t samples,
+                uint32_t w, uint32_t h, TextureUsage usage, VulkanStagePool& stagePool);
+
     ~VulkanTexture();
 
     // Uploads data into a subregion of a 2D or 3D texture.

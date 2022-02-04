@@ -53,7 +53,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(VkDebugReportFlagsEXT flags,
         int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData) {
     if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT) {
         utils::slog.e << "VULKAN ERROR: (" << pLayerPrefix << ") " << pMessage << utils::io::endl;
-        exit(1);
+utils::debug_trap();        exit(1);
     } else {
         utils::slog.w << "VULKAN WARNING: (" << pLayerPrefix << ") "
                 << pMessage << utils::io::endl;
@@ -67,7 +67,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(VkDebugUtilsMessageSeverityFla
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         utils::slog.e << "VULKAN ERROR: (" << cbdata->pMessageIdName << ") "
                 << cbdata->pMessage << utils::io::endl;
-        exit(1);
+utils::debug_trap();        exit(1);
     } else {
         // TODO: emit best practices warnings about aggressive pipeline barriers.
         if (strstr(cbdata->pMessage, "ALL_GRAPHICS_BIT") || strstr(cbdata->pMessage, "ALL_COMMANDS_BIT")) {
@@ -575,13 +575,13 @@ void VulkanDriver::createSwapChainR(Handle<HwSwapChain> sch, void* nativeWindow,
     const VkInstance instance = mContext.instance;
     auto vksurface = (VkSurfaceKHR) mContextManager.createVkSurfaceKHR(nativeWindow, instance,
             flags);
-    construct<VulkanSwapChain>(sch, mContext, vksurface);
+    construct<VulkanSwapChain>(sch, mContext, mStagePool, vksurface);
 }
 
 void VulkanDriver::createSwapChainHeadlessR(Handle<HwSwapChain> sch,
         uint32_t width, uint32_t height, uint64_t flags) {
     assert_invariant(width > 0 && height > 0 && "Vulkan requires non-zero swap chain dimensions.");
-    construct<VulkanSwapChain>(sch, mContext, width, height);
+    construct<VulkanSwapChain>(sch, mContext, mStagePool, width, height);
 }
 
 void VulkanDriver::createStreamFromTextureIdR(Handle<HwStream> sh, intptr_t externalTextureId,
@@ -1003,7 +1003,7 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
     }
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
-    VulkanAttachment& depth = rt->getDepth(sc);
+    const VulkanAttachment depth = rt->getSamples() == 1 ? rt->getDepth(sc) : rt->getMsaaDepth();
     VulkanTexture* depthFeedback = nullptr;
 
     // If an uncleared depth buffer is attached but discarded at the end of the pass, then we should
@@ -1013,12 +1013,10 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         depthFeedback = depth.texture;
     }
 
-    // TODO: why doesn't color have this logic?
-    const VkImageLayout desiredDepthLayout =
-            any(params.flags.discardEnd & TargetBufferFlags::DEPTH) ?
-            VK_IMAGE_LAYOUT_UNDEFINED : getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT);
-
+    const VkImageLayout desiredDepthLayout = getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT);
     const VkImageLayout desiredColorLayout = getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT);
+
+    assert_invariant(depth.texture == VK_NULL_HANDLE || depth.format != VK_FORMAT_UNDEFINED);
 
     // Create the VkRenderPass or fetch it from cache.
     VulkanFboCache::RenderPassKey rpkey = {
@@ -1031,27 +1029,18 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         .subpassMask = uint8_t(params.subpassMask)
     };
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        VulkanAttachment& attachment = rt->getColor(sc, i);
+        const VulkanAttachment attachment = rt->getColor(sc, i);
         rpkey.existingColorLayout[i] = attachment.layout;
         rpkey.colorFormat[i] = attachment.format;
         VulkanTexture* texture = attachment.texture;
-        if (rpkey.samples > 1 && texture && texture->samples == 1) {
-            rpkey.needsResolveMask |= (1 << i);
-        }
-
-        // The FboCache can change the image layout, so the texture needs to be notified.
-        attachment.layout = desiredColorLayout;
         if (texture) {
+            if (rpkey.samples > 1 && texture->samples == 1) {
+                rpkey.needsResolveMask |= (1 << i);
+            }
             texture->trackLayout(attachment.level, attachment.layer, desiredColorLayout);
         }
     }
 
-    if (rt->isSwapChain()) {
-        sc->getColor().layout = desiredColorLayout;
-        sc->depth.layout = desiredDepthLayout;
-    }
-
-    depth.layout = desiredDepthLayout;
     if (depth.texture) {
         depth.texture->trackLayout(depth.level, depth.layer, desiredDepthLayout);
     }
@@ -1086,7 +1075,7 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         }
     }
     if (depth.format != VK_FORMAT_UNDEFINED) {
-        fbkey.depth = rpkey.samples == 1 ? depth.view : rt->getMsaaDepth().view;
+        fbkey.depth = depth.view;
         assert_invariant(fbkey.depth);
     }
     VkFramebuffer vkfb = mFramebufferCache.getFramebuffer(fbkey);
@@ -1863,7 +1852,7 @@ void VulkanDriver::refreshSwapChain() {
 
     assert_invariant(!surface.headlessQueue && "Resizing headless swap chains is not supported.");
     surface.destroy();
-    surface.create();
+    surface.create(mStagePool);
 
     mFramebufferCache.reset();
 }

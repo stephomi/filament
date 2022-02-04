@@ -78,7 +78,7 @@ VulkanProgram::VulkanProgram(VulkanContext& context, const Program& builder) noe
 #if FILAMENT_VULKAN_VERBOSE
     utils::slog.d << "Created VulkanProgram " << builder.getName().c_str()
                 << ", variant = (" << utils::io::hex
-                << (int) builder.getVariant() << utils::io::dec << "), "
+                << (int) builder.getVariant().key << utils::io::dec << "), "
                 << "shaders = (" << bundle.vertex << ", " << bundle.fragment << ")"
                 << utils::io::endl;
 #endif
@@ -230,20 +230,12 @@ VulkanAttachment VulkanRenderTarget::getColor(VulkanSwapChain* currentSurface, i
     return (mOffscreen || target > 0) ? mColor[target] : currentSurface->getColor();
 }
 
-VulkanAttachment& VulkanRenderTarget::getColor(VulkanSwapChain* currentSurface, int target) {
-    return (mOffscreen || target > 0) ? mColor[target] : currentSurface->getColor();
-}
-
 VulkanAttachment VulkanRenderTarget::getMsaaColor(int target) const {
     return mMsaaAttachments[target];
 }
 
-VulkanAttachment& VulkanRenderTarget::getDepth(VulkanSwapChain* currentSurface) {
-    return mOffscreen ? mDepth : currentSurface->depth;
-}
-
 VulkanAttachment VulkanRenderTarget::getDepth(VulkanSwapChain* currentSurface) const {
-    return mOffscreen ? mDepth : currentSurface->depth;
+    return mOffscreen ? mDepth : currentSurface->getDepth();
 }
 
 VulkanAttachment VulkanRenderTarget::getMsaaDepth() const {

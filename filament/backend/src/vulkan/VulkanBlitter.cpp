@@ -130,8 +130,7 @@ void VulkanBlitter::blitFast(VkImageAspectFlags aspect, VkFilter filter,
 
     const VkCommandBuffer cmdbuffer = mContext.commands->get().cmdbuffer;
 
-    assert_invariant(src.texture && dst.texture &&
-            "Vulkan backend does not yet support SwapChain blits");
+    assert_invariant(src.texture && dst.texture);
 
     // TODO: the transitions are not necessary if the existing layout is GENERAL
 
