@@ -1005,6 +1005,11 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
     VulkanAttachment depth = rt->getSamples() == 1 ? rt->getDepth(sc) : rt->getMsaaDepth();
     VulkanTexture* depthFeedback = nullptr;
 
+    VulkanDepthLayout initialDepthLayout = fromVkImageLayout(depth.layout);
+    VulkanDepthLayout renderPassDepthLayout =
+            fromVkImageLayout(getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT));
+    VulkanDepthLayout finalDepthLayout = renderPassDepthLayout;
+
     // If an uncleared depth buffer is attached but discarded at the end of the pass, then we should
     // permit the shader to sample from it by transitioning the layout of all its subresources to a
     // read-only layout. This is especially crucial for SSAO.
@@ -1021,36 +1026,30 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
     if (depth.texture && any(params.flags.discardEnd & TargetBufferFlags::DEPTH) &&
             !any(params.flags.clear & TargetBufferFlags::DEPTH)) {
         depthFeedback = depth.texture;
-        const VulkanLayoutTransition transition = {
-            .image = depth.image,
-            .oldLayout = depth.layout,
-            .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-            .subresources = {
-                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                .levelCount = depth.texture->levels,
-                .layerCount = depth.texture->depth,
-            },
-            .srcStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            .dstStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-        };
-        transitionImageLayout(cmdbuffer, transition);
-        depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        renderPassDepthLayout = VulkanDepthLayout::READ_ONLY;
     }
 
     // Create the VkRenderPass or fetch it from cache.
     VulkanFboCache::RenderPassKey rpkey = {
-        .depthLayout = depth.layout,
+        .initialColorLayoutMask = 0,
+        .initialDepthLayout = initialDepthLayout,
+        .renderPassDepthLayout = renderPassDepthLayout,
+        .finalDepthLayout = finalDepthLayout,
         .depthFormat = depth.format,
         .clear = params.flags.clear,
         .discardStart = discardStart,
         .discardEnd = params.flags.discardEnd,
         .samples = rt->getSamples(),
-        .subpassMask = uint8_t(params.subpassMask)
+        .subpassMask = uint8_t(params.subpassMask),
+        .isSwapChain = rt->isSwapChain(),
     };
     for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        rpkey.colorLayout[i] = rt->getColor(sc, i).layout;
-        rpkey.colorFormat[i] = rt->getColor(sc, i).format;
-        VulkanTexture* texture = rt->getColor(sc, i).texture;
+        const VulkanAttachment& info = rt->getColor(sc, i);
+        if (info.layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+            rpkey.initialColorLayoutMask |= 1 << i;
+        }
+        rpkey.colorFormat[i] = info.format;
+        VulkanTexture* texture = info.texture;
         if (rpkey.samples > 1 && texture && texture->samples == 1) {
             rpkey.needsResolveMask |= (1 << i);
         }
@@ -1176,23 +1175,6 @@ void VulkanDriver::endRenderPass(int) {
     vkCmdEndRenderPass(cmdbuffer);
 
     assert_invariant(mCurrentRenderTarget);
-
-    VulkanTexture* depthFeedback = mContext.currentRenderPass.depthFeedback;
-    if (depthFeedback) {
-        const VulkanLayoutTransition transition = {
-            .image = depthFeedback->getVkImage(),
-            .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .subresources = {
-                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                .levelCount = depthFeedback->levels,
-                .layerCount = depthFeedback->depth,
-            },
-            .srcStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            .dstStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-        };
-        transitionImageLayout(cmdbuffer, transition);
-    }
 
     // Since we might soon be sampling from the render target that we just wrote to, we need a
     // pipeline barrier between framebuffer writes and shader reads. This is a memory barrier rather
@@ -1808,6 +1790,7 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
                 .imageLayout = getDefaultImageLayout(texture->usage)
             };
 
+            // TODO: remove this, just use tracked layout instead of getDefaultImageLayout
             if (mContext.currentRenderPass.depthFeedback == texture) {
                 iInfo[bindingPoint].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
             }

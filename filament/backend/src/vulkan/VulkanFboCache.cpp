@@ -32,18 +32,20 @@ namespace backend {
 
 bool VulkanFboCache::RenderPassEq::operator()(const RenderPassKey& k1,
         const RenderPassKey& k2) const {
+    if (k1.initialColorLayoutMask != k2.initialColorLayoutMask) return false;
+    if (k1.initialDepthLayout != k2.initialDepthLayout) return false;
+    if (k1.renderPassDepthLayout != k2.renderPassDepthLayout) return false;
+    if (k1.finalDepthLayout != k2.finalDepthLayout) return false;
+    for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
+        if (k1.colorFormat[i] != k2.colorFormat[i]) return false;
+    }
+    if (k1.depthFormat != k2.depthFormat) return false;
     if (k1.clear != k2.clear) return false;
     if (k1.discardStart != k2.discardStart) return false;
     if (k1.discardEnd != k2.discardEnd) return false;
     if (k1.samples != k2.samples) return false;
     if (k1.needsResolveMask != k2.needsResolveMask) return false;
     if (k1.subpassMask != k2.subpassMask) return false;
-    if (k1.depthLayout != k2.depthLayout) return false;
-    if (k1.depthFormat != k2.depthFormat) return false;
-    for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-        if (k1.colorLayout[i] != k2.colorLayout[i]) return false;
-        if (k1.colorFormat[i] != k2.colorFormat[i]) return false;
-    }
     return true;
 }
 
@@ -126,7 +128,6 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         iter.value().timestamp = mCurrentTime;
         return iter->second.handle;
     }
-    const bool isSwapChain = config.colorLayout[0] == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     const bool hasSubpasses = config.subpassMask != 0;
 
     // Set up some const aliases for terseness.
@@ -142,7 +143,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
     // swap chain.
     const bool discard = any(config.discardStart & TargetBufferFlags::COLOR);
     struct { VkImageLayout subpass, initial, final; } colorLayouts[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT];
-    if (isSwapChain) {
+    if (config.isSwapChain) {
         colorLayouts[0].subpass = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         // Specifying UNDEFINED for "initial" can discard the existing data.
@@ -152,8 +153,9 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         colorLayouts[0].final = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     } else {
         for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
-            colorLayouts[i].subpass = config.colorLayout[i];
-            colorLayouts[i].initial = config.colorLayout[i];
+            colorLayouts[i].initial = (config.initialColorLayoutMask & (1 << i)) ?
+                    VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+            colorLayouts[i].subpass = getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT);
             colorLayouts[i].final = getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT);
         }
     }
@@ -305,7 +307,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         const bool clear = any(config.clear & TargetBufferFlags::DEPTH);
         const bool discardStart = any(config.discardStart & TargetBufferFlags::DEPTH);
         const bool discardEnd = any(config.discardEnd & TargetBufferFlags::DEPTH);
-        depthAttachmentRef.layout = config.depthLayout;
+        depthAttachmentRef.layout = toVkImageLayout(config.renderPassDepthLayout);
         depthAttachmentRef.attachment = attachmentIndex;
         attachments[attachmentIndex++] = {
             .format = config.depthFormat,
@@ -314,8 +316,8 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
             .storeOp = discardEnd ? kDisableStore : kEnableStore,
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = config.depthLayout,
-            .finalLayout = getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT)
+            .initialLayout = toVkImageLayout(config.initialDepthLayout),
+            .finalLayout = toVkImageLayout(config.finalDepthLayout),
         };
     }
     renderPassInfo.attachmentCount = attachmentIndex;
