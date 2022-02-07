@@ -19,6 +19,7 @@
 #include <utils/Panic.h>
 
 #include "VulkanConstants.h"
+#include "VulkanUtility.h"
 
 // If any VkRenderPass or VkFramebuffer is unused for more than TIME_BEFORE_EVICTION frames, it
 // is evicted from the cache.
@@ -153,7 +154,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         for (int i = 0; i < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; i++) {
             colorLayouts[i].subpass = config.colorLayout[i];
             colorLayouts[i].initial = config.colorLayout[i];
-            colorLayouts[i].final = config.colorLayout[i];
+            colorLayouts[i].final = getDefaultImageLayout(TextureUsage::COLOR_ATTACHMENT);
         }
     }
 
@@ -314,7 +315,7 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .initialLayout = config.depthLayout,
-            .finalLayout = config.depthLayout
+            .finalLayout = getDefaultImageLayout(TextureUsage::DEPTH_ATTACHMENT)
         };
     }
     renderPassInfo.attachmentCount = attachmentIndex;
