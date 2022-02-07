@@ -308,6 +308,12 @@ VkRenderPass VulkanFboCache::getRenderPass(RenderPassKey config) noexcept {
         const bool discardStart = any(config.discardStart & TargetBufferFlags::DEPTH);
         const bool discardEnd = any(config.discardEnd & TargetBufferFlags::DEPTH);
         depthAttachmentRef.layout = toVkImageLayout(config.renderPassDepthLayout);
+
+printf("prideout creating FBO cache entry depth vk layouts are %d -> %d -> %d\n",
+        toVkImageLayout(config.initialDepthLayout),
+                depthAttachmentRef.layout,
+                toVkImageLayout(config.finalDepthLayout));
+
         depthAttachmentRef.attachment = attachmentIndex;
         attachments[attachmentIndex++] = {
             .format = config.depthFormat,

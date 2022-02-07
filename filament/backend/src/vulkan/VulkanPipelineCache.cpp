@@ -280,6 +280,7 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::createDescriptor
         if (mDescriptorRequirements.samplers[binding].sampler) {
             VkDescriptorImageInfo& imageInfo = descriptorSamplers[binding];
             imageInfo = mDescriptorRequirements.samplers[binding];
+            printf("WRITE DESCRIPTOR SET sampler=%d with layout=%d with view=%p\n", binding, imageInfo.imageLayout, imageInfo.imageView);
             writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeInfo.pNext = nullptr;
             writeInfo.dstArrayElement = 0;
@@ -302,6 +303,7 @@ VulkanPipelineCache::DescriptorCacheEntry* VulkanPipelineCache::createDescriptor
         if (mDescriptorRequirements.inputAttachments[binding].imageView) {
             VkDescriptorImageInfo& imageInfo = descriptorInputAttachments[binding];
             imageInfo = mDescriptorRequirements.inputAttachments[binding];
+            printf("WRITE DESCRIPTOR SET target=%d with layout=%d with view=%p\n", binding, imageInfo.imageLayout, imageInfo.imageView);
             writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeInfo.pNext = nullptr;
             writeInfo.dstArrayElement = 0;

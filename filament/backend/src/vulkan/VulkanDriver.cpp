@@ -53,7 +53,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(VkDebugReportFlagsEXT flags,
         int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData) {
     if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT) {
         utils::slog.e << "VULKAN ERROR: (" << pLayerPrefix << ") " << pMessage << utils::io::endl;
-        utils::debug_trap();
+        exit(1);
     } else {
         utils::slog.w << "VULKAN WARNING: (" << pLayerPrefix << ") "
                 << pMessage << utils::io::endl;
@@ -67,7 +67,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(VkDebugUtilsMessageSeverityFla
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         utils::slog.e << "VULKAN ERROR: (" << cbdata->pMessageIdName << ") "
                 << cbdata->pMessage << utils::io::endl;
-        utils::debug_trap();
+        exit(1);
     } else {
         // TODO: emit best practices warnings about aggressive pipeline barriers.
         if (strstr(cbdata->pMessage, "ALL_GRAPHICS_BIT") || strstr(cbdata->pMessage, "ALL_COMMANDS_BIT")) {
@@ -1029,6 +1029,12 @@ void VulkanDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassP
         renderPassDepthLayout = VulkanDepthLayout::READ_ONLY;
     }
 
+    printf("prideout finding FBO cache entry depth vk layout is %d => %d => %d, mip=%d, image=%p\n",
+        toVkImageLayout(initialDepthLayout),
+        toVkImageLayout(renderPassDepthLayout),
+        toVkImageLayout(finalDepthLayout), depth.level,
+        depth.image);
+
     // Create the VkRenderPass or fetch it from cache.
     VulkanFboCache::RenderPassKey rpkey = {
         .initialColorLayoutMask = 0,
@@ -1790,6 +1796,10 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
                 .imageLayout = getDefaultImageLayout(texture->usage)
             };
 
+            printf("prideout binding a sampler: depthFeedback=%p texture=%p image=%p view=%p\n",
+                mContext.currentRenderPass.depthFeedback, texture, texture->getVkImage(),
+                iInfo[bindingPoint].imageView);
+
             // TODO: remove this, just use tracked layout instead of getDefaultImageLayout
             if (mContext.currentRenderPass.depthFeedback == texture) {
                 iInfo[bindingPoint].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -1803,6 +1813,7 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
     // If descriptor set allocation failed, skip the draw call and bail. No need to emit an error
     // message since the validation layers already do so.
     if (!mPipelineCache.bindDescriptors(cmdbuffer)) {
+exit(1);
         return;
     }
 
@@ -1826,6 +1837,7 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
     // If allocation failed, skip the draw call and bail. We do not emit an error since the
     // validation layer will already do so.
     if (!mPipelineCache.bindPipeline(cmdbuffer)) {
+exit(1);
         return;
     }
 
@@ -1842,7 +1854,9 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
     const uint32_t firstIndex = prim.offset / prim.indexBuffer->elementSize;
     const int32_t vertexOffset = 0;
     const uint32_t firstInstId = 1;
+    puts("draw{");
     vkCmdDrawIndexed(cmdbuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstId);
+    puts("draw}");
 }
 
 void VulkanDriver::beginTimerQuery(Handle<HwTimerQuery> tqh) {
