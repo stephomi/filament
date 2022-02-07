@@ -575,13 +575,13 @@ void VulkanDriver::createSwapChainR(Handle<HwSwapChain> sch, void* nativeWindow,
     const VkInstance instance = mContext.instance;
     auto vksurface = (VkSurfaceKHR) mContextManager.createVkSurfaceKHR(nativeWindow, instance,
             flags);
-    construct<VulkanSwapChain>(sch, mContext, vksurface);
+    construct<VulkanSwapChain>(sch, mContext, mStagePool, vksurface);
 }
 
 void VulkanDriver::createSwapChainHeadlessR(Handle<HwSwapChain> sch,
         uint32_t width, uint32_t height, uint64_t flags) {
     assert_invariant(width > 0 && height > 0 && "Vulkan requires non-zero swap chain dimensions.");
-    construct<VulkanSwapChain>(sch, mContext, width, height);
+    construct<VulkanSwapChain>(sch, mContext, mStagePool, width, height);
 }
 
 void VulkanDriver::createStreamFromTextureIdR(Handle<HwStream> sh, intptr_t externalTextureId,
@@ -1788,6 +1788,10 @@ void VulkanDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> r
             const SamplerParams& samplerParams = boundSampler->s;
             VkSampler vksampler = mSamplerCache.getSampler(samplerParams);
 
+#ifndef NDEBUG
+            texture->validatePrimaryImageView();
+#endif
+
             iInfo[bindingPoint] = {
                 .sampler = vksampler,
                 .imageView = texture->getPrimaryImageView(),
@@ -1872,7 +1876,7 @@ void VulkanDriver::refreshSwapChain() {
 
     assert_invariant(!surface.headlessQueue && "Resizing headless swap chains is not supported.");
     surface.destroy();
-    surface.create();
+    surface.create(mStagePool);
 
     mFramebufferCache.reset();
 }
