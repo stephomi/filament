@@ -44,7 +44,6 @@ struct VulkanAttachment {
     VkFormat format;
     VkImage image;
     VkImageView view;
-    VkDeviceMemory memory;
     VulkanTexture* texture = nullptr;
     uint8_t level;
     uint16_t layer;
