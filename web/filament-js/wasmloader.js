@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+Filament.onReadyListeners = [];
+
+Filament.isReady = false;
+
 /// init ::function:: Downloads assets, loads the Filament module, and invokes a callback when done.
 ///
 /// All JavaScript clients must call the init function, passing in a list of asset URL's and a
@@ -28,7 +32,12 @@
 /// onready ::argument:: callback that gets invoked after all assets have been downloaded and the \
 /// Filament WebAssembly module has been loaded.
 Filament.init = (assets, onready) => {
-    onready = onready || (() => {});
+    Filament.onReadyListeners.push(onready || (() => {}));
+    if (Filament.initialized) {
+        return;
+    };
+    Filament.initialized = true;
+
     Filament.assets = {};
 
     // Usage of glmatrix is optional. If it exists, then go ahead and augment it with some
@@ -41,7 +50,10 @@ Filament.init = (assets, onready) => {
     let remainingTasks = 1 + assets.length;
     const taskFinished = () => {
         if (--remainingTasks == 0) {
-            onready();
+            for (const callback of Filament.onReadyListeners) {
+                callback();
+            }
+            Filament.isReady = true;
         }
     };
 
